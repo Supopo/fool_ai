@@ -11,16 +11,12 @@ class MyApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      // 应用程序在任务栏和窗口管理器中显示的标题
       title: 'AI Toolbox',
-      // 隐藏右上角的 "Debug" 标志
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
-        // 使用深紫色作为主题种子色，并开启 Material 3 设计规范
         colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple),
         useMaterial3: true,
       ),
-      // 设置首页为多 AI 聚合页面
       home: const MultiAIPage(),
     );
   }
@@ -34,118 +30,180 @@ class MultiAIPage extends StatefulWidget {
 }
 
 class _MultiAIPageState extends State<MultiAIPage> {
-  // 当前左侧边栏选中的 AI 索引
-  int _selectedIndex = 0; 
-  // 控制底部全局输入框内容的控制器
+  int _selectedIndex = 0;
   final TextEditingController _inputController = TextEditingController();
-  
-  // AI 平台的配置列表：包含显示名称、访问网址以及对应的图标
+
   final List<Map<String, dynamic>> _aiConfigs = [
-    {'name': '豆包', 'url': 'https://www.doubao.com', 'icon': Icons.auto_awesome},
+    {'name': 'ChatGPT', 'url': 'https://chatgpt.com', 'icon': Icons.smart_toy},
     {'name': 'DeepSeek', 'url': 'https://chat.deepseek.com', 'icon': Icons.psychology},
+    {'name': '豆包', 'url': 'https://www.doubao.com', 'icon': Icons.auto_awesome},
+    {'name': '通义千问', 'url': 'https://www.tongyi.com/qianwen', 'icon': Icons.travel_explore},
+    {'name': '文心一言', 'url': 'https://yiyan.baidu.com', 'icon': Icons.chat_bubble_outline},
   ];
 
-  // 为每个 AI 平台创建独立的 Webview 控制器，确保页面状态（如登录、对话）不冲突
-  final List<WebviewController> _controllers = [
-    WebviewController(),
-    WebviewController(),
-  ];
+  late final List<WebviewController> _controllers =
+      List.generate(_aiConfigs.length, (_) => WebviewController());
 
-  // 记录每个 Webview 实例是否已完成初始化
-  final List<bool> _isInitialized = [false, false];
+  late final List<bool> _isInitialized =
+      List.filled(_aiConfigs.length, false);
 
   @override
   void initState() {
     super.initState();
-    // 页面加载时开始初始化所有 AI 窗口
     _initAllWebViews();
   }
 
-  /// 初始化所有 Webview 实例的异步方法
   Future<void> _initAllWebViews() async {
     for (int i = 0; i < _aiConfigs.length; i++) {
       try {
-        // 初始化浏览器核心
         await _controllers[i].initialize();
-        // 设置默认背景色为白色，避免加载瞬间出现黑边
         await _controllers[i].setBackgroundColor(Colors.white);
-        // 禁止弹出独立的新窗口，强制在当前视图内跳转
         await _controllers[i].setPopupWindowPolicy(WebviewPopupWindowPolicy.deny);
-        // 加载配置中的 URL
         await _controllers[i].loadUrl(_aiConfigs[i]['url']);
-        
         if (mounted) {
           setState(() {
             _isInitialized[i] = true;
           });
         }
       } catch (e) {
-        // 如果初始化失败，在控制台打印错误
         debugPrint('WebView $i 初始化失败: $e');
       }
     }
   }
 
-  /// 一键同步咨询逻辑：将全局输入框的内容注入到所有正在运行的 AI 页面并尝试触发发送
-  void _sendToAll() {
+  Future<void> _sendToAll() async {
     final text = _inputController.text.trim();
     if (text.isEmpty) return;
 
-    for (var controller in _controllers) {
-      // 仅处理已初始化成功的 Webview
-      if (!controller.value.isInitialized) continue;
-      
-      // JavaScript 强效注入脚本：
-      // 1. 自动寻找各个大模型页面的输入框（textarea 或 contenteditable 元素）
-      // 2. 使用 execCommand('insertText') 模拟物理键盘输入，这是绕过 React/Vue 状态拦截的关键
-      // 3. 寻找并点击“发送”按钮，或者模拟回车键保底
-      const jsCode = """
-        (function(val) {
-          var el = document.getElementById('chat-input') || 
-                   document.querySelector('textarea') || 
-                   document.querySelector('[contenteditable="true"]');
-          if (el) {
-            el.focus();
-            try {
-              // 全选内容并插入，确保触发网页框架的数据双向绑定
-              document.execCommand('selectAll', false, null);
-              document.execCommand('insertText', false, val);
-            } catch(e) {
-              el.value = val;
-            }
-            // 派发输入事件通知网页
-            el.dispatchEvent(new Event('input', { bubbles: true, cancelable: true }));
-            el.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
-            
-            // 延迟 400ms，等待网页 UI 响应输入后再模拟点击发送
-            setTimeout(function() {
-              var buttons = Array.from(document.querySelectorAll('button'));
-              var sendBtn = buttons.find(function(btn) {
-                var html = btn.innerHTML.toLowerCase();
-                var btnText = btn.innerText.trim();
-                // 智能匹配：包含“发送”字样、"Send" 或包含特定的 svg 图标路径
-                return (btnText === '发送' || btnText === 'Send' || html.includes('send') || html.includes('arrow')) && !btn.disabled;
-              });
-              if (sendBtn) {
-                sendBtn.click();
-              } else {
-                // 如果没找到确定的发送按钮，发送物理回车按键事件
-                var keyParams = { bubbles: true, cancelable: true, key: 'Enter', code: 'Enter', keyCode: 13, which: 13 };
-                el.dispatchEvent(new KeyboardEvent('keydown', keyParams));
-              }
-            }, 400);
-          }
-        })
-      """;
-      controller.executeScript("$jsCode('${text.replaceAll("'", "\\'").replaceAll("\n", "\\n")}');");
-    }
-    // 操作完成后，清空本地全局输入框
     _inputController.clear();
+    FocusScope.of(context).unfocus();
+
+    // Focus + clear only. Do not write text via DOM — Qianwen/ProseMirror will
+    // show ghost text while keeping the real editor state empty (gray send).
+    const focusClearJs = r'''
+      (function() {
+        function visible(el) {
+          if (!el) return false;
+          var r = el.getBoundingClientRect();
+          return r.width > 0 && r.height > 0;
+        }
+        function findInput() {
+          var nodes = Array.from(document.querySelectorAll(
+            '.ProseMirror[contenteditable="true"], textarea, #chat-input, [contenteditable="true"], [role="textbox"]'
+          )).filter(visible);
+          if (!nodes.length) return null;
+          nodes.sort(function(a, b) {
+            return b.getBoundingClientRect().bottom - a.getBoundingClientRect().bottom;
+          });
+          return nodes[0];
+        }
+        var el = findInput();
+        if (!el) return false;
+        el.focus();
+        try { el.click(); } catch (e) {}
+        try {
+          document.execCommand('selectAll', false, null);
+          document.execCommand('delete', false, null);
+        } catch (e) {}
+        return true;
+      })()
+    ''';
+
+    const clickSendJs = r'''
+      (function() {
+        function visible(el) {
+          if (!el) return false;
+          var r = el.getBoundingClientRect();
+          return r.width > 0 && r.height > 0;
+        }
+        function findInput() {
+          var nodes = Array.from(document.querySelectorAll(
+            '.ProseMirror[contenteditable="true"], textarea, #chat-input, [contenteditable="true"], [role="textbox"]'
+          )).filter(visible);
+          if (!nodes.length) return null;
+          nodes.sort(function(a, b) {
+            return b.getBoundingClientRect().bottom - a.getBoundingClientRect().bottom;
+          });
+          return nodes[0];
+        }
+        function isDisabled(el) {
+          return !!(el.disabled || el.getAttribute('aria-disabled') === 'true' ||
+            el.classList.contains('disabled'));
+        }
+        function findSendBtn(input) {
+          var root = (input && input.closest(
+            'form, [class*="footer"], [class*="input"], [class*="composer"], [class*="operate"], [class*="bottom"]'
+          )) || document;
+          var nodes = Array.from(root.querySelectorAll('button, [role="button"]')).filter(visible);
+          var scored = nodes.map(function(btn) {
+            var label = (
+              (btn.getAttribute('aria-label') || '') + ' ' +
+              (btn.getAttribute('title') || '') + ' ' +
+              (btn.innerText || '') + ' ' +
+              (btn.className || '')
+            ).toLowerCase();
+            var score = 0;
+            if (/search|搜索|查找|history|历史/.test(label)) score -= 20;
+            if (/发送|提交|\bsend\b|\bsubmit\b/.test(label)) score += 6;
+            if (/\b(paper-?plane|send-?icon)\b/.test(label)) score += 3;
+            if (isDisabled(btn)) score -= 10;
+            return { btn: btn, score: score };
+          }).filter(function(x) { return x.score > 0; })
+            .sort(function(a, b) { return b.score - a.score; });
+          return scored.length ? scored[0].btn : null;
+        }
+        function pressKey(el, key, mods) {
+          mods = mods || {};
+          var opts = {
+            bubbles: true, cancelable: true, key: key, code: key,
+            keyCode: 13, which: 13,
+            ctrlKey: !!mods.ctrl, metaKey: !!mods.meta, shiftKey: !!mods.shift
+          };
+          el.dispatchEvent(new KeyboardEvent('keydown', opts));
+          el.dispatchEvent(new KeyboardEvent('keyup', opts));
+        }
+        var el = findInput();
+        if (!el) return false;
+        el.focus();
+        function tryOnce() {
+          var btn = findSendBtn(el);
+          if (btn && !isDisabled(btn)) {
+            btn.click();
+            return true;
+          }
+          return false;
+        }
+        if (tryOnce()) return true;
+        var n = 0;
+        var timer = setInterval(function() {
+          if (tryOnce() || ++n >= 10) {
+            clearInterval(timer);
+            if (n >= 10) {
+              pressKey(el, 'Enter');
+              setTimeout(function() { pressKey(el, 'Enter', { ctrl: true }); }, 120);
+            }
+          }
+        }, 200);
+        return true;
+      })()
+    ''';
+
+    for (final controller in _controllers) {
+      if (!controller.value.isInitialized) continue;
+      try {
+        await controller.executeScript(focusClearJs);
+        await Future<void>.delayed(const Duration(milliseconds: 80));
+        await controller.insertText(text);
+        await Future<void>.delayed(const Duration(milliseconds: 250));
+        await controller.executeScript(clickSendJs);
+      } catch (e) {
+        debugPrint('同步发送失败: $e');
+      }
+    }
   }
 
   @override
   void dispose() {
-    // 页面销毁时释放 Webview 资源
     for (var c in _controllers) { c.dispose(); }
     _inputController.dispose();
     super.dispose();
@@ -153,62 +211,92 @@ class _MultiAIPageState extends State<MultiAIPage> {
 
   @override
   Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
     return Scaffold(
       body: Row(
         children: [
-          // 左侧固定导航栏
-          NavigationRail(
-            selectedIndex: _selectedIndex,
-            onDestinationSelected: (int index) => setState(() => _selectedIndex = index),
-            labelType: NavigationRailLabelType.all,
-            destinations: _aiConfigs.map((ai) => NavigationRailDestination(
-              icon: Icon(ai['icon']),
-              label: Text(ai['name']),
-            )).toList(),
+          SizedBox(
+            width: 88,
+            child: Material(
+              color: colorScheme.surfaceContainerLow,
+              child: ListView.builder(
+                padding: const EdgeInsets.symmetric(vertical: 8),
+                itemCount: _aiConfigs.length,
+                itemBuilder: (context, index) {
+                  final ai = _aiConfigs[index];
+                  final selected = index == _selectedIndex;
+                  return InkWell(
+                    onTap: () => setState(() => _selectedIndex = index),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(
+                        vertical: 12,
+                        horizontal: 4,
+                      ),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            ai['icon'] as IconData,
+                            color: selected
+                                ? colorScheme.primary
+                                : colorScheme.onSurfaceVariant,
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            ai['name'] as String,
+                            textAlign: TextAlign.center,
+                            style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                                  color: selected
+                                      ? colorScheme.primary
+                                      : colorScheme.onSurfaceVariant,
+                                  fontWeight:
+                                      selected ? FontWeight.w600 : FontWeight.w400,
+                                ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  );
+                },
+              ),
+            ),
           ),
-          // 垂直分割线
           const VerticalDivider(thickness: 1, width: 1),
-          // 右侧内容主体
           Expanded(
             child: Column(
               children: [
-                // 使用 IndexedStack 包裹 Webview 视图，确保切换 Tab 时后台页面不被销毁，保持会话状态
                 Expanded(
                   child: IndexedStack(
                     index: _selectedIndex,
-                    children: [
-                      _buildWebView(0),
-                      _buildWebView(1),
-                    ],
+                    children: List.generate(
+                      _aiConfigs.length,
+                      _buildWebView,
+                    ),
                   ),
                 ),
-                // 底部全局输入控制栏
                 Container(
                   padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
                   decoration: BoxDecoration(
-                    // 使用 surfaceVariant 柔和配色，并设置微弱透明
-                    color: Theme.of(context).colorScheme.surfaceVariant.withOpacity(0.3),
-                    border: Border(top: BorderSide(color: Colors.grey.withOpacity(0.1))),
+                    color: colorScheme.surfaceContainerHighest.withOpacity(0.3),
+                    border: Border(
+                      top: BorderSide(color: Colors.grey.withOpacity(0.1)),
+                    ),
                   ),
                   child: Row(
                     children: [
-                      // 同步输入框
                       Expanded(
                         child: TextField(
                           controller: _inputController,
                           decoration: const InputDecoration(
-                            hintText: '在此写下问题，一键同步发送...',
+                            hintText: '在此输入问题，一键同步发送...',
                             border: OutlineInputBorder(),
-                            contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                           ),
-                          // 支持回车键触发同步咨询
                           onSubmitted: (_) => _sendToAll(),
                         ),
                       ),
                       const SizedBox(width: 12),
-                      // 发送按钮
                       IconButton.filled(
-                        onPressed: _sendToAll, 
+                        onPressed: _sendToAll,
                         icon: const Icon(Icons.send),
                         tooltip: '同步发送',
                       ),
@@ -223,11 +311,11 @@ class _MultiAIPageState extends State<MultiAIPage> {
     );
   }
 
-  /// 构建单个 Webview 的小部件封装，处理未初始化时的加载反馈
   Widget _buildWebView(int index) {
     if (!_isInitialized[index]) {
       return const Center(child: CircularProgressIndicator());
     }
+
     return Webview(_controllers[index]);
   }
 }

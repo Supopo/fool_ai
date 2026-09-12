@@ -1,4 +1,3 @@
-#pragma execution_character_set("utf-8")
 #include <flutter/dart_project.h>
 #include <flutter/flutter_view_controller.h>
 #include <windows.h>
@@ -32,6 +31,21 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
 
   ::MSG msg;
   while (::GetMessage(&msg, nullptr, 0, 0)) {
+    // Windows delivers WM_MOUSEWHEEL to the focused HWND, which may be WebView2
+    // after a click. The page is a Flutter texture, so the event must reach the
+    // Flutter view and be forwarded into WebView2 from Dart.
+    if (msg.message == WM_MOUSEWHEEL || msg.message == WM_MOUSEHWHEEL) {
+      HWND app = window.GetHandle();
+      HWND flutter_view = window.GetChildContent();
+      HWND under_cursor = ::WindowFromPoint(msg.pt);
+      if (app && flutter_view && under_cursor &&
+          (under_cursor == app || ::IsChild(app, under_cursor)) &&
+          msg.hwnd != flutter_view) {
+        ::SendMessage(flutter_view, msg.message, msg.wParam, msg.lParam);
+        continue;
+      }
+    }
+
     ::TranslateMessage(&msg);
     ::DispatchMessage(&msg);
   }
