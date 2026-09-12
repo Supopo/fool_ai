@@ -202,6 +202,27 @@ class _MultiAIPageState extends State<MultiAIPage> {
     }
   }
 
+  Future<void> _reloadCurrent() async {
+    final controller = _controllers[_selectedIndex];
+    if (!controller.value.isInitialized) return;
+    try {
+      await controller.reload();
+    } catch (e) {
+      debugPrint('刷新当前页失败: $e');
+    }
+  }
+
+  Future<void> _reloadAll() async {
+    for (final controller in _controllers) {
+      if (!controller.value.isInitialized) continue;
+      try {
+        await controller.reload();
+      } catch (e) {
+        debugPrint('刷新页面失败: $e');
+      }
+    }
+  }
+
   @override
   void dispose() {
     for (var c in _controllers) { c.dispose(); }
@@ -266,12 +287,43 @@ class _MultiAIPageState extends State<MultiAIPage> {
             child: Column(
               children: [
                 Expanded(
-                  child: IndexedStack(
-                    index: _selectedIndex,
-                    children: List.generate(
-                      _aiConfigs.length,
-                      _buildWebView,
-                    ),
+                  child: Stack(
+                    children: [
+                      IndexedStack(
+                        index: _selectedIndex,
+                        children: List.generate(
+                          _aiConfigs.length,
+                          _buildWebView,
+                        ),
+                      ),
+                      Positioned(
+                        right: 48,
+                        bottom: 48,
+                        child: Material(
+                          elevation: 3,
+                          borderRadius: BorderRadius.circular(24),
+                          color: colorScheme.surface.withOpacity(0.92),
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(horizontal: 4),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                IconButton(
+                                  onPressed: _reloadCurrent,
+                                  icon: const Icon(Icons.refresh),
+                                  tooltip: '刷新当前页',
+                                ),
+                                IconButton(
+                                  onPressed: _reloadAll,
+                                  icon: const Icon(Icons.replay_circle_filled),
+                                  tooltip: '刷新全部',
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
                   ),
                 ),
                 Container(
