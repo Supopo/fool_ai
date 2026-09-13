@@ -13,7 +13,7 @@ Future<void> main() async {
     center: true,
     backgroundColor: Colors.transparent,
     titleBarStyle: TitleBarStyle.hidden,
-    title: 'AI Toolbox',
+    title: '智慧饼',
   );
   await windowManager.waitUntilReadyToShow(options, () async {
     await windowManager.show();
@@ -30,7 +30,7 @@ class MyApp extends StatelessWidget {
   Widget build(BuildContext context) {
     const seed = Color(0xFF2F6FED);
     return MaterialApp(
-      title: 'AI Toolbox',
+      title: '智慧饼',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(
@@ -442,7 +442,7 @@ class _MultiAIPageState extends State<MultiAIPage> with WindowListener {
                       ),
                       const SizedBox(width: 8),
                       Text(
-                        'AI Toolbox',
+                        '智慧饼',
                         style: Theme.of(context).textTheme.titleSmall?.copyWith(
                               fontWeight: FontWeight.w600,
                             ),

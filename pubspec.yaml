@@ -1,8 +1,8 @@
 name: fool_ai
-description: "A new Flutter project."
+description: "智慧饼 - AI 对比工具"
 publish_to: 'none'
 
-version: 1.0.0+1
+version: 1.0.4
 
 environment:
   sdk: ^3.10.7

@@ -1,11 +1,11 @@
 {
-    "name": "fool_ai",
-    "short_name": "fool_ai",
+    "name": "智慧饼",
+    "short_name": "智慧饼",
     "start_url": ".",
     "display": "standalone",
     "background_color": "#0175C2",
     "theme_color": "#0175C2",
-    "description": "A new Flutter project.",
+    "description": "智慧饼 - AI 对比工具",
     "orientation": "portrait-primary",
     "prefer_related_applications": false,
     "icons": [
