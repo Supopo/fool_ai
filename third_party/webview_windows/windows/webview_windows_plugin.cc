@@ -6,6 +6,7 @@
 #include <windows.h>
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <unordered_map>
 
@@ -59,12 +60,14 @@ class WebviewWindowsPlugin : public flutter::Plugin {
   std::unordered_map<int64_t, std::unique_ptr<WebviewBridge>> instances_;
 
   WNDCLASS window_class_ = {};
+  int window_proc_id_ = -1;
   flutter::PluginRegistrarWindows* registrar_;
   flutter::TextureRegistrar* textures_;
   flutter::BinaryMessenger* messenger_;
 
   bool InitPlatform();
   HWND GetFlutterViewHwnd();
+  void SetAllWebviewsVisible(bool visible);
 
   void CreateWebviewInstance(
       std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>>);
@@ -101,9 +104,32 @@ WebviewWindowsPlugin::WebviewWindowsPlugin(
   window_class_.lpfnWndProc = &DefWindowProc;
   window_class_.hInstance = GetModuleHandle(nullptr);
   RegisterClass(&window_class_);
+
+  // WebView2 child HWNDs do not receive minimize/restore; hide them so they
+  // cannot block desktop clicks while the Flutter window is minimized.
+  window_proc_id_ = registrar_->RegisterTopLevelWindowProcDelegate(
+      [this](HWND, UINT message, WPARAM wparam,
+             LPARAM) -> std::optional<LRESULT> {
+        if (message == WM_SIZE) {
+          switch (wparam) {
+            case SIZE_MINIMIZED:
+              SetAllWebviewsVisible(false);
+              break;
+            case SIZE_RESTORED:
+            case SIZE_MAXIMIZED:
+              SetAllWebviewsVisible(true);
+              break;
+          }
+        }
+        return std::nullopt;
+      });
 }
 
 WebviewWindowsPlugin::~WebviewWindowsPlugin() {
+  if (window_proc_id_ != -1) {
+    registrar_->UnregisterTopLevelWindowProcDelegate(window_proc_id_);
+    window_proc_id_ = -1;
+  }
   instances_.clear();
   UnregisterClass(window_class_.lpszClassName, nullptr);
 }
@@ -248,6 +274,12 @@ HWND WebviewWindowsPlugin::GetFlutterViewHwnd() {
     return nullptr;
   }
   return view->GetNativeWindow();
+}
+
+void WebviewWindowsPlugin::SetAllWebviewsVisible(bool visible) {
+  for (auto& [id, instance] : instances_) {
+    instance->SetVisible(visible);
+  }
 }
 
 }  // namespace

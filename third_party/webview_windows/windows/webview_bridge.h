@@ -23,6 +23,14 @@ class WebviewBridge {
 
   int64_t texture_id() const { return texture_id_; }
 
+  // Hide WebView2 HWNDs while the app is minimized so they do not keep
+  // capturing mouse clicks over the desktop.
+  void SetVisible(bool visible) {
+    if (webview_) {
+      webview_->SetVisible(visible);
+    }
+  }
+
  private:
   std::unique_ptr<flutter::TextureVariant> flutter_texture_;
   std::unique_ptr<TextureBridge> texture_bridge_;

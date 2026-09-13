@@ -14,6 +14,7 @@ dependencies:
   url_launcher: ^6.3.0
   webview_windows:
     path: third_party/webview_windows
+  window_manager: ^0.5.2
 
 dev_dependencies:
   flutter_test:
@@ -22,3 +23,5 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
+  assets:
+    - assets/app_icon.png

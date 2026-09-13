@@ -23,5 +23,10 @@ windows/webview.cc adds InsertText via DevTools Input.insertText so rich
 editors (Qianwen / ProseMirror) receive real typed input and enable send.
 lib/src/webview.dart exposes insertText() for Dart callers.
 
+windows/webview_windows_plugin.cc hides all WebView2 surfaces on
+SIZE_MINIMIZED and shows them again on restore/maximize, so minimized apps
+do not leave an invisible click-blocking overlay on the desktop.
+
 After a full Windows rebuild, verify scrolling, text selection after scroll,
-and sync-send on Doubao / DeepSeek / ChatGPT / Qianwen / Wenxin.
+sync-send on Doubao / DeepSeek / ChatGPT / Qianwen / Wenxin, and that the
+desktop stays clickable while the app is minimized.

@@ -835,6 +835,13 @@ bool Webview::Resume() {
          webview_controller_->put_IsVisible(true) == S_OK;
 }
 
+void Webview::SetVisible(bool visible) {
+  if (!IsValid()) {
+    return;
+  }
+  webview_controller_->put_IsVisible(visible);
+}
+
 bool Webview::SetVirtualHostNameMapping(
     const std::string& hostName, const std::string& path,
     WebviewHostResourceAccessKind accessKind) {
