@@ -1,3 +1,5 @@
+import 'dart:collection';
+
 import 'package:flutter/material.dart';
 import 'package:webview_windows/webview_windows.dart';
 import 'package:window_manager/window_manager.dart';
@@ -71,6 +73,8 @@ class _MultiAIPageState extends State<MultiAIPage> with WindowListener {
   int _selectedIndex = 0;
   final TextEditingController _inputController = TextEditingController();
   bool _isMaximized = false;
+  bool _compareMode = false;
+  final LinkedHashSet<int> _compareSelection = LinkedHashSet<int>();
 
   final List<Map<String, dynamic>> _aiConfigs = [
     {'name': 'ChatGPT', 'url': 'https://chatgpt.com', 'icon': Icons.smart_toy},
@@ -255,12 +259,17 @@ class _MultiAIPageState extends State<MultiAIPage> with WindowListener {
   }
 
   Future<void> _reloadCurrent() async {
-    final controller = _controllers[_selectedIndex];
-    if (!controller.value.isInitialized) return;
-    try {
-      await controller.reload();
-    } catch (e) {
-      debugPrint('刷新当前页失败: $e');
+    final targets = _compareMode
+        ? _compareSelection.toList()
+        : <int>[_selectedIndex];
+    for (final index in targets) {
+      final controller = _controllers[index];
+      if (!controller.value.isInitialized) continue;
+      try {
+        await controller.reload();
+      } catch (e) {
+        debugPrint('刷新页面失败: $e');
+      }
     }
   }
 
@@ -273,6 +282,43 @@ class _MultiAIPageState extends State<MultiAIPage> with WindowListener {
         debugPrint('刷新页面失败: $e');
       }
     }
+  }
+
+  void _enterCompareMode() {
+    setState(() {
+      _compareMode = true;
+      if (_compareSelection.isEmpty) {
+        _compareSelection.add(_selectedIndex);
+        if (_aiConfigs.length > 1) {
+          _compareSelection.add((_selectedIndex + 1) % _aiConfigs.length);
+        }
+      }
+    });
+  }
+
+  void _exitCompareMode() {
+    setState(() {
+      _compareMode = false;
+      if (_compareSelection.isNotEmpty) {
+        _selectedIndex = _compareSelection.first;
+      }
+    });
+  }
+
+  void _onAiTapped(int index) {
+    if (_compareMode) {
+      setState(() {
+        if (_compareSelection.contains(index)) {
+          if (_compareSelection.length > 1) {
+            _compareSelection.remove(index);
+          }
+        } else {
+          _compareSelection.add(index);
+        }
+      });
+      return;
+    }
+    setState(() => _selectedIndex = index);
   }
 
   @override
@@ -302,13 +348,9 @@ class _MultiAIPageState extends State<MultiAIPage> with WindowListener {
                       Expanded(
                         child: Stack(
                           children: [
-                            IndexedStack(
-                              index: _selectedIndex,
-                              children: List.generate(
-                                _aiConfigs.length,
-                                _buildWebView,
-                              ),
-                            ),
+                            _compareMode
+                                ? _buildCompareView()
+                                : _buildWebView(_selectedIndex),
                             Positioned(
                               right: 48,
                               bottom: 48,
@@ -326,7 +368,9 @@ class _MultiAIPageState extends State<MultiAIPage> with WindowListener {
                                       IconButton(
                                         onPressed: _reloadCurrent,
                                         icon: const Icon(Icons.refresh),
-                                        tooltip: '刷新当前页',
+                                        tooltip: _compareMode
+                                            ? '刷新对比中的页面'
+                                            : '刷新当前页',
                                       ),
                                       IconButton(
                                         onPressed: _reloadAll,
@@ -457,48 +501,121 @@ class _MultiAIPageState extends State<MultiAIPage> with WindowListener {
           right: BorderSide(color: Colors.black.withOpacity(0.06)),
         ),
       ),
-      child: ListView.builder(
-        padding: const EdgeInsets.fromLTRB(10, 12, 10, 12),
-        itemCount: _aiConfigs.length,
-        itemBuilder: (context, index) {
-          final ai = _aiConfigs[index];
-          final selected = index == _selectedIndex;
-          return Padding(
-            padding: const EdgeInsets.only(bottom: 6),
+      child: Column(
+        children: [
+          Expanded(
+            child: ListView.builder(
+              padding: const EdgeInsets.fromLTRB(10, 12, 10, 8),
+              itemCount: _aiConfigs.length,
+              itemBuilder: (context, index) {
+                final ai = _aiConfigs[index];
+                final selected = _compareMode
+                    ? _compareSelection.contains(index)
+                    : index == _selectedIndex;
+                return Padding(
+                  padding: const EdgeInsets.only(bottom: 6),
+                  child: Material(
+                    color: selected
+                        ? colorScheme.primary.withOpacity(0.10)
+                        : Colors.transparent,
+                    borderRadius: BorderRadius.circular(12),
+                    child: InkWell(
+                      borderRadius: BorderRadius.circular(12),
+                      onTap: () => _onAiTapped(index),
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(
+                            vertical: 12, horizontal: 6),
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Stack(
+                              clipBehavior: Clip.none,
+                              children: [
+                                Icon(
+                                  ai['icon'] as IconData,
+                                  size: 22,
+                                  color: selected
+                                      ? colorScheme.primary
+                                      : colorScheme.onSurfaceVariant,
+                                ),
+                                if (_compareMode && selected)
+                                  Positioned(
+                                    right: -6,
+                                    top: -6,
+                                    child: Icon(
+                                      Icons.check_circle,
+                                      size: 14,
+                                      color: colorScheme.primary,
+                                    ),
+                                  ),
+                              ],
+                            ),
+                            const SizedBox(height: 6),
+                            Text(
+                              ai['name'] as String,
+                              textAlign: TextAlign.center,
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                              style: Theme.of(context)
+                                  .textTheme
+                                  .labelSmall
+                                  ?.copyWith(
+                                    color: selected
+                                        ? colorScheme.primary
+                                        : colorScheme.onSurfaceVariant,
+                                    fontWeight: selected
+                                        ? FontWeight.w700
+                                        : FontWeight.w500,
+                                    height: 1.2,
+                                  ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                );
+              },
+            ),
+          ),
+          const Divider(height: 1),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(8, 8, 8, 12),
             child: Material(
-              color: selected
-                  ? colorScheme.primary.withOpacity(0.10)
+              color: _compareMode
+                  ? colorScheme.primary.withOpacity(0.12)
                   : Colors.transparent,
               borderRadius: BorderRadius.circular(12),
               child: InkWell(
                 borderRadius: BorderRadius.circular(12),
-                onTap: () => setState(() => _selectedIndex = index),
+                onTap: () {
+                  if (_compareMode) {
+                    _exitCompareMode();
+                  } else {
+                    _enterCompareMode();
+                  }
+                },
                 child: Padding(
                   padding:
-                      const EdgeInsets.symmetric(vertical: 12, horizontal: 6),
+                      const EdgeInsets.symmetric(vertical: 12, horizontal: 4),
                   child: Column(
-                    mainAxisSize: MainAxisSize.min,
                     children: [
                       Icon(
-                        ai['icon'] as IconData,
+                        Icons.compare_arrows_rounded,
                         size: 22,
-                        color: selected
+                        color: _compareMode
                             ? colorScheme.primary
                             : colorScheme.onSurfaceVariant,
                       ),
                       const SizedBox(height: 6),
                       Text(
-                        ai['name'] as String,
+                        _compareMode ? '退出对比' : '对比模式',
                         textAlign: TextAlign.center,
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
                         style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                              color: selected
+                              color: _compareMode
                                   ? colorScheme.primary
                                   : colorScheme.onSurfaceVariant,
-                              fontWeight:
-                                  selected ? FontWeight.w700 : FontWeight.w500,
-                              height: 1.2,
+                              fontWeight: FontWeight.w700,
                             ),
                       ),
                     ],
@@ -506,9 +623,112 @@ class _MultiAIPageState extends State<MultiAIPage> with WindowListener {
                 ),
               ),
             ),
-          );
-        },
+          ),
+        ],
       ),
+    );
+  }
+
+  Widget _buildCompareView() {
+    final indices = _compareSelection.toList();
+    if (indices.isEmpty) {
+      return Center(
+        child: Text(
+          '请在左侧勾选要对比的 AI',
+          style: TextStyle(color: Colors.black.withOpacity(0.45)),
+        ),
+      );
+    }
+
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        const minPaneWidth = 340.0;
+        final useScroll =
+            constraints.maxWidth < minPaneWidth * indices.length;
+        final paneWidth = useScroll
+            ? minPaneWidth
+            : constraints.maxWidth / indices.length;
+
+        if (useScroll) {
+          return ListView.separated(
+            scrollDirection: Axis.horizontal,
+            itemCount: indices.length,
+            separatorBuilder: (_, __) => VerticalDivider(
+              width: 1,
+              thickness: 1,
+              color: Colors.black.withOpacity(0.08),
+            ),
+            itemBuilder: (_, i) => SizedBox(
+              width: paneWidth,
+              child: _buildComparePane(indices[i]),
+            ),
+          );
+        }
+
+        return Row(
+          children: [
+            for (var i = 0; i < indices.length; i++) ...[
+              if (i > 0)
+                VerticalDivider(
+                  width: 1,
+                  thickness: 1,
+                  color: Colors.black.withOpacity(0.08),
+                ),
+              Expanded(child: _buildComparePane(indices[i])),
+            ],
+          ],
+        );
+      },
+    );
+  }
+
+  Widget _buildComparePane(int index) {
+    final ai = _aiConfigs[index];
+    final colorScheme = Theme.of(context).colorScheme;
+    return Column(
+      children: [
+        Container(
+          height: 40,
+          padding: const EdgeInsets.symmetric(horizontal: 12),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            border: Border(
+              bottom: BorderSide(color: Colors.black.withOpacity(0.06)),
+            ),
+          ),
+          child: Row(
+            children: [
+              Icon(
+                ai['icon'] as IconData,
+                size: 16,
+                color: colorScheme.primary,
+              ),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text(
+                  ai['name'] as String,
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                        fontWeight: FontWeight.w700,
+                      ),
+                ),
+              ),
+              IconButton(
+                tooltip: '移出对比',
+                onPressed: () {
+                  if (_compareSelection.length <= 1) return;
+                  setState(() => _compareSelection.remove(index));
+                },
+                icon: const Icon(Icons.close, size: 16),
+                visualDensity: VisualDensity.compact,
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+              ),
+            ],
+          ),
+        ),
+        Expanded(child: _buildWebView(index)),
+      ],
     );
   }
 
@@ -529,8 +749,10 @@ class _MultiAIPageState extends State<MultiAIPage> with WindowListener {
               Expanded(
                 child: TextField(
                   controller: _inputController,
-                  decoration: const InputDecoration(
-                    hintText: '输入问题，一键同步发送到全部 AI…',
+                  decoration: InputDecoration(
+                    hintText: _compareMode
+                        ? '输入问题，同步发送到全部 AI（可左右对比回答）…'
+                        : '输入问题，一键同步发送到全部 AI…',
                   ),
                   onSubmitted: (_) => _sendToAll(),
                 ),
@@ -560,7 +782,13 @@ class _MultiAIPageState extends State<MultiAIPage> with WindowListener {
       return const Center(child: CircularProgressIndicator());
     }
 
-    return Webview(_controllers[index]);
+    // Remount when layout mode changes so surface size is reported fresh.
+    return Webview(
+      _controllers[index],
+      key: ValueKey(
+        'webview-$index-${_compareMode ? 'compare-${_compareSelection.length}' : 'single'}',
+      ),
+    );
   }
 }
 

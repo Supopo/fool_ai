@@ -10,6 +10,6 @@ void main() {
     expect(find.text('豆包'), findsOneWidget);
     expect(find.text('通义千问'), findsOneWidget);
     expect(find.text('文心一言'), findsOneWidget);
-
+    expect(find.text('对比模式'), findsOneWidget);
   });
 }

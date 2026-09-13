@@ -94,8 +94,20 @@ class WebviewController extends ValueNotifier<WebviewValue> {
   late Completer<void> _creatingCompleter;
   int _textureId = 0;
   bool _isDisposed = false;
+  /// Monotonic token so stale async setSize from a previous layout (e.g.
+  /// compare-pane → full-size) cannot overwrite the current surface size.
+  int _surfaceSizeSerial = 0;
 
   Future<void> get ready => _creatingCompleter.future;
+
+  int beginSurfaceSizeReport() => ++_surfaceSizeSerial;
+
+  void invalidateSurfaceSize() {
+    _surfaceSizeSerial++;
+  }
+
+  bool isSurfaceSizeReportCurrent(int serial) =>
+      !_isDisposed && serial == _surfaceSizeSerial;
 
   PermissionRequestedDelegate? _permissionRequested;
 
@@ -564,14 +576,27 @@ class WebviewController extends ValueNotifier<WebviewValue> {
     return _methodChannel.invokeMethod('setScrollDelta', [dx, dy]);
   }
 
-  /// Sets the surface size to the provided [size].
-  Future<void> _setSize(Size size, double scaleFactor) async {
+  /// Sets the surface size to the provided [size] (logical pixels) and
+  /// [scaleFactor] (defaults to the window device pixel ratio when omitted).
+  /// When [sizeSerial] is set, the call is ignored if a newer surface-size
+  /// report has started (or the previous layout was invalidated).
+  Future<void> setSize(Size size,
+      [double? scaleFactor, int? sizeSerial]) async {
     if (_isDisposed) {
       return;
     }
+    if (sizeSerial != null && !isSurfaceSizeReportCurrent(sizeSerial)) {
+      return;
+    }
     assert(value.isInitialized);
+    final dpr = scaleFactor ?? window.devicePixelRatio;
     return _methodChannel
-        .invokeMethod('setSize', [size.width, size.height, scaleFactor]);
+        .invokeMethod('setSize', [size.width, size.height, dpr]);
+  }
+
+  /// Sets the surface size to the provided [size].
+  Future<void> _setSize(Size size, double scaleFactor) async {
+    return setSize(size, scaleFactor);
   }
 }
 
@@ -594,11 +619,13 @@ class Webview extends StatefulWidget {
   final FilterQuality filterQuality;
 
   const Webview(this.controller,
-      {this.width,
+      {Key? key,
+      this.width,
       this.height,
       this.permissionRequested,
       this.scaleFactor,
-      this.filterQuality = FilterQuality.none});
+      this.filterQuality = FilterQuality.none})
+      : super(key: key);
 
   @override
   _WebviewState createState() => _WebviewState();
@@ -615,6 +642,7 @@ class _WebviewState extends State<Webview> {
   WebviewController get _controller => widget.controller;
 
   StreamSubscription? _cursorSubscription;
+  int _localSizeEpoch = 0;
 
   @override
   void initState() {
@@ -632,6 +660,18 @@ class _WebviewState extends State<Webview> {
         _cursor = cursor;
       });
     });
+  }
+
+  @override
+  void didUpdateWidget(covariant Webview oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    WidgetsBinding.instance.addPostFrameCallback((_) => _reportSurfaceSize());
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    WidgetsBinding.instance.addPostFrameCallback((_) => _reportSurfaceSize());
   }
 
   @override
@@ -742,16 +782,47 @@ class _WebviewState extends State<Webview> {
   }
 
   void _reportSurfaceSize() async {
+    final localEpoch = ++_localSizeEpoch;
+    final serial = _controller.beginSurfaceSizeReport();
     final box = _key.currentContext?.findRenderObject() as RenderBox?;
-    if (box != null) {
-      await _controller.ready;
-      unawaited(_controller._setSize(
-          box.size, widget.scaleFactor ?? window.devicePixelRatio));
+    if (box == null || !box.hasSize) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted &&
+            localEpoch == _localSizeEpoch &&
+            _controller.isSurfaceSizeReportCurrent(serial)) {
+          _reportSurfaceSize();
+        }
+      });
+      return;
     }
+    final size = box.size;
+    if (size.width < 2 || size.height < 2) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted &&
+            localEpoch == _localSizeEpoch &&
+            _controller.isSurfaceSizeReportCurrent(serial)) {
+          _reportSurfaceSize();
+        }
+      });
+      return;
+    }
+    await _controller.ready;
+    if (!mounted ||
+        localEpoch != _localSizeEpoch ||
+        !_controller.isSurfaceSizeReportCurrent(serial) ||
+        _controller.value.isInitialized != true) {
+      return;
+    }
+    await _controller.setSize(
+        size, widget.scaleFactor ?? window.devicePixelRatio, serial);
   }
 
   @override
   void dispose() {
+    _localSizeEpoch++;
+    // Drop in-flight size reports from this layout before another Webview
+    // (same controller) may mount at full size after leaving compare mode.
+    _controller.invalidateSurfaceSize();
     super.dispose();
     _cursorSubscription?.cancel();
   }

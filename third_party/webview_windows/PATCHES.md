@@ -27,6 +27,10 @@ windows/webview_windows_plugin.cc hides all WebView2 surfaces on
 SIZE_MINIMIZED and shows them again on restore/maximize, so minimized apps
 do not leave an invisible click-blocking overlay on the desktop.
 
+lib/src/webview.dart tracks a surface-size serial on WebviewController so
+async setSize from a disposed compare-pane layout cannot overwrite the
+full-size report after leaving compare mode (stretched/blurry text).
+
 After a full Windows rebuild, verify scrolling, text selection after scroll,
 sync-send on Doubao / DeepSeek / ChatGPT / Qianwen / Wenxin, and that the
 desktop stays clickable while the app is minimized.
