@@ -20,6 +20,17 @@ add_executable(${BINARY_NAME} WIN32
 # that need different build settings.
 apply_standard_settings(${BINARY_NAME})
 
+# On-disk exe display name (Chinese). CMake target must remain ASCII (BINARY_NAME).
+if(DEFINED APP_OUTPUT_NAME)
+  set_target_properties(${BINARY_NAME} PROPERTIES OUTPUT_NAME "${APP_OUTPUT_NAME}")
+  # Keep a fool_ai.exe copy so `flutter run` (which looks up BINARY_NAME) still works.
+  add_custom_command(TARGET ${BINARY_NAME} POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+      "$<TARGET_FILE:${BINARY_NAME}>"
+      "$<TARGET_FILE_DIR:${BINARY_NAME}>/${BINARY_NAME}.exe"
+    COMMENT "Mirror output exe as ${BINARY_NAME}.exe for Flutter tooling")
+endif()
+
 # Treat source as UTF-8 so Chinese string literals (e.g. app title) compile
 # cleanly under MSVC without C4819 / hand-written \u escapes.
 target_compile_options(${BINARY_NAME} PRIVATE /utf-8)

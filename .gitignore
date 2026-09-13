@@ -43,3 +43,6 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+dist/智慧饼-windows-x64-v1.0.4.zip
+dist/智慧饼-windows-x64.zip
+dist/AIToolbox-windows-x64.zip
