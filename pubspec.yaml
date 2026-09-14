@@ -2,7 +2,7 @@ name: fool_ai
 description: "智慧饼 - AI 对比工具"
 publish_to: 'none'
 
-version: 1.0.4
+version: 1.0.5
 
 environment:
   sdk: ^3.10.7

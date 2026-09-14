@@ -74,7 +74,9 @@ class _MultiAIPageState extends State<MultiAIPage> with WindowListener {
   final TextEditingController _inputController = TextEditingController();
   bool _isMaximized = false;
   bool _compareMode = false;
+  bool _syncMode = false;
   final LinkedHashSet<int> _compareSelection = LinkedHashSet<int>();
+  final LinkedHashSet<int> _syncSelection = LinkedHashSet<int>();
 
   final List<Map<String, dynamic>> _aiConfigs = [
     {'name': 'ChatGPT', 'url': 'https://chatgpt.com', 'icon': Icons.smart_toy},
@@ -244,7 +246,9 @@ class _MultiAIPageState extends State<MultiAIPage> with WindowListener {
       })()
     ''';
 
-    for (final controller in _controllers) {
+    final targets = _syncTargets();
+    for (final index in targets) {
+      final controller = _controllers[index];
       if (!controller.value.isInitialized) continue;
       try {
         await controller.executeScript(focusClearJs);
@@ -253,9 +257,46 @@ class _MultiAIPageState extends State<MultiAIPage> with WindowListener {
         await Future<void>.delayed(const Duration(milliseconds: 250));
         await controller.executeScript(clickSendJs);
       } catch (e) {
-        debugPrint('同步发送失败: $e');
+        debugPrint('同步发送失败 (${_aiConfigs[index]['name']}): $e');
       }
     }
+  }
+
+  /// Sync mode: user-picked AIs. Otherwise send to every initialized page.
+  List<int> _syncTargets() {
+    if (_syncMode && _syncSelection.isNotEmpty) {
+      return _syncSelection.toList();
+    }
+    return List<int>.generate(_aiConfigs.length, (i) => i);
+  }
+
+  void _enterSyncMode() {
+    setState(() {
+      _syncMode = true;
+      if (_syncSelection.isEmpty) {
+        for (var i = 0; i < _aiConfigs.length; i++) {
+          _syncSelection.add(i);
+        }
+      }
+    });
+  }
+
+  void _exitSyncMode() {
+    _inputController.clear();
+    FocusScope.of(context).unfocus();
+    setState(() => _syncMode = false);
+  }
+
+  void _toggleSyncTarget(int index) {
+    setState(() {
+      if (_syncSelection.contains(index)) {
+        if (_syncSelection.length > 1) {
+          _syncSelection.remove(index);
+        }
+      } else {
+        _syncSelection.add(index);
+      }
+    });
   }
 
   Future<void> _reloadCurrent() async {
@@ -386,7 +427,7 @@ class _MultiAIPageState extends State<MultiAIPage> with WindowListener {
                           ],
                         ),
                       ),
-                      _buildBottomBar(context),
+                      if (_syncMode) _buildBottomBar(context),
                     ],
                   ),
                 ),
@@ -580,7 +621,52 @@ class _MultiAIPageState extends State<MultiAIPage> with WindowListener {
           ),
           const Divider(height: 1),
           Padding(
-            padding: const EdgeInsets.fromLTRB(8, 8, 8, 12),
+            padding: const EdgeInsets.fromLTRB(8, 8, 8, 4),
+            child: Material(
+              color: _syncMode
+                  ? colorScheme.primary.withOpacity(0.12)
+                  : Colors.transparent,
+              borderRadius: BorderRadius.circular(12),
+              child: InkWell(
+                borderRadius: BorderRadius.circular(12),
+                onTap: () {
+                  if (_syncMode) {
+                    _exitSyncMode();
+                  } else {
+                    _enterSyncMode();
+                  }
+                },
+                child: Padding(
+                  padding:
+                      const EdgeInsets.symmetric(vertical: 12, horizontal: 4),
+                  child: Column(
+                    children: [
+                      Icon(
+                        Icons.sync_alt_rounded,
+                        size: 22,
+                        color: _syncMode
+                            ? colorScheme.primary
+                            : colorScheme.onSurfaceVariant,
+                      ),
+                      const SizedBox(height: 6),
+                      Text(
+                        _syncMode ? '退出同步' : '同步发送',
+                        textAlign: TextAlign.center,
+                        style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                              color: _syncMode
+                                  ? colorScheme.primary
+                                  : colorScheme.onSurfaceVariant,
+                              fontWeight: FontWeight.w700,
+                            ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(8, 4, 8, 12),
             child: Material(
               color: _compareMode
                   ? colorScheme.primary.withOpacity(0.12)
@@ -609,7 +695,7 @@ class _MultiAIPageState extends State<MultiAIPage> with WindowListener {
                       ),
                       const SizedBox(height: 6),
                       Text(
-                        _compareMode ? '退出对比' : '对比模式',
+                        _compareMode ? '退出对比' : '对比查看',
                         textAlign: TextAlign.center,
                         style: Theme.of(context).textTheme.labelSmall?.copyWith(
                               color: _compareMode
@@ -733,6 +819,9 @@ class _MultiAIPageState extends State<MultiAIPage> with WindowListener {
   }
 
   Widget _buildBottomBar(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final targets = _syncTargets();
+
     return Container(
       padding: const EdgeInsets.fromLTRB(20, 12, 20, 14),
       decoration: BoxDecoration(
@@ -744,31 +833,69 @@ class _MultiAIPageState extends State<MultiAIPage> with WindowListener {
       child: Center(
         child: ConstrainedBox(
           constraints: const BoxConstraints(maxWidth: 760),
-          child: Row(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              Expanded(
-                child: TextField(
-                  controller: _inputController,
-                  decoration: InputDecoration(
-                    hintText: _compareMode
-                        ? '输入问题，同步发送到全部 AI（可左右对比回答）…'
-                        : '输入问题，一键同步发送到全部 AI…',
-                  ),
-                  onSubmitted: (_) => _sendToAll(),
-                ),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  for (var i = 0; i < _aiConfigs.length; i++)
+                    FilterChip(
+                      selected: _syncSelection.contains(i),
+                      avatar: Icon(
+                        _aiConfigs[i]['icon'] as IconData,
+                        size: 16,
+                        color: _syncSelection.contains(i)
+                            ? colorScheme.onPrimary
+                            : colorScheme.primary,
+                      ),
+                      label: Text(_aiConfigs[i]['name'] as String),
+                      onSelected: (_) => _toggleSyncTarget(i),
+                      selectedColor: colorScheme.primary,
+                      checkmarkColor: colorScheme.onPrimary,
+                      labelStyle: TextStyle(
+                        color: _syncSelection.contains(i)
+                            ? colorScheme.onPrimary
+                            : colorScheme.onSurface,
+                        fontWeight: FontWeight.w600,
+                      ),
+                      showCheckmark: false,
+                      side: BorderSide(
+                        color: _syncSelection.contains(i)
+                            ? colorScheme.primary
+                            : Colors.black.withOpacity(0.12),
+                      ),
+                    ),
+                ],
               ),
-              const SizedBox(width: 12),
-              FilledButton.icon(
-                onPressed: _sendToAll,
-                icon: const Icon(Icons.send_rounded, size: 18),
-                label: const Text('同步发送'),
-                style: FilledButton.styleFrom(
-                  minimumSize: const Size(0, 48),
-                  padding: const EdgeInsets.symmetric(horizontal: 18),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(12),
+              const SizedBox(height: 10),
+              Row(
+                children: [
+                  Expanded(
+                    child: TextField(
+                      controller: _inputController,
+                      decoration: InputDecoration(
+                        hintText: '输入问题，同步发送到已选的 ${targets.length} 个 AI…',
+                      ),
+                      onSubmitted: (_) => _sendToAll(),
+                    ),
                   ),
-                ),
+                  const SizedBox(width: 12),
+                  FilledButton.icon(
+                    onPressed: _sendToAll,
+                    icon: const Icon(Icons.send_rounded, size: 18),
+                    label: Text('同步发送 (${targets.length})'),
+                    style: FilledButton.styleFrom(
+                      minimumSize: const Size(0, 48),
+                      padding: const EdgeInsets.symmetric(horizontal: 18),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                    ),
+                  ),
+                ],
               ),
             ],
           ),
