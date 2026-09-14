@@ -47,3 +47,7 @@ app.*.map.json
 # Release packages
 /dist/
 /dist/**
+
+# Packaging download cache
+/scripts/cache/
+

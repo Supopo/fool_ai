@@ -2,6 +2,7 @@
 <#
 .SYNOPSIS
   Build and package the Windows release (with progress).
+  Bundles VC++ runtime DLLs + WebView2 bootstrapper + Chinese readme.
 
 .PARAMETER SkipBuild
   Skip flutter build; only re-zip an existing Release output.
@@ -17,12 +18,16 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $script:StartedAt = Get-Date
-$script:StepCount = 5
+$script:StepCount = 6
 $script:StepIndex = 0
 $script:ExitCode = 0
 
 $Root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 Set-Location $Root
+
+$VcDllNames = @('msvcp140.dll', 'vcruntime140.dll', 'vcruntime140_1.dll')
+$WebView2BootstrapUrl = 'https://go.microsoft.com/fwlink/p/?LinkId=2124703'
+$CacheDir = Join-Path $Root 'scripts\cache'
 
 function Format-Elapsed([datetime]$from = $script:StartedAt) {
   $ts = (Get-Date) - $from
@@ -61,6 +66,99 @@ function Read-AppOutputName {
     return $Matches[1]
   }
   return ([string]([char]0x667A) + [char]0x6167 + [char]0x997C)
+}
+
+function Find-VcRedistDirectory {
+  $searchRoots = @(
+    'F:\VisualStudio',
+    (Join-Path $env:ProgramFiles 'Microsoft Visual Studio\2022'),
+    (Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\2022'),
+    (Join-Path $env:ProgramFiles 'Microsoft Visual Studio\2019'),
+    (Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\2019')
+  ) | Where-Object { $_ -and (Test-Path $_) }
+
+  foreach ($root in $searchRoots) {
+    $hit = Get-ChildItem -Path $root -Recurse -Filter 'msvcp140.dll' -ErrorAction SilentlyContinue |
+      Where-Object {
+        $_.FullName -match '\\x64\\' -and
+        $_.FullName -match 'Microsoft\.VC\d+\.CRT'
+      } |
+      Select-Object -First 1
+    if ($hit) {
+      return $hit.Directory.FullName
+    }
+  }
+
+  $sys = Join-Path $env:SystemRoot 'System32'
+  $ok = $true
+  foreach ($n in $VcDllNames) {
+    if (-not (Test-Path (Join-Path $sys $n))) { $ok = $false }
+  }
+  if ($ok) { return $sys }
+  return $null
+}
+
+function Copy-VcRedistDlls([string]$StageDir) {
+  $dir = Find-VcRedistDirectory
+  if (-not $dir) {
+    throw 'Cannot find VC++ x64 runtime DLLs (msvcp140 / vcruntime140). Install VS Build Tools or VC++ Redistributable on the build PC.'
+  }
+  Write-Info ("VC++ DLL source: {0}" -f $dir)
+  foreach ($n in $VcDllNames) {
+    $src = Join-Path $dir $n
+    if (-not (Test-Path $src)) {
+      throw "Missing $n under $dir"
+    }
+    Copy-Item $src (Join-Path $StageDir $n) -Force
+    Write-Info ("Bundled {0}" -f $n)
+  }
+}
+
+function Get-WebView2Bootstrapper([string]$StageDir) {
+  New-Item -ItemType Directory -Force -Path $CacheDir | Out-Null
+  $cached = Join-Path $CacheDir 'MicrosoftEdgeWebView2Setup.exe'
+  if (-not (Test-Path $cached) -or ((Get-Item $cached).Length -lt 100KB)) {
+    Write-Info 'Downloading WebView2 Evergreen Bootstrapper...'
+    Write-Info $WebView2BootstrapUrl
+    try {
+      Invoke-WebRequest -Uri $WebView2BootstrapUrl -OutFile $cached -UseBasicParsing
+    } catch {
+      # Fallback for older PowerShell / TLS issues
+      $wc = New-Object System.Net.WebClient
+      $wc.DownloadFile($WebView2BootstrapUrl, $cached)
+    }
+  } else {
+    Write-Info 'Using cached WebView2 bootstrapper'
+  }
+  if (-not (Test-Path $cached) -or ((Get-Item $cached).Length -lt 100KB)) {
+    throw 'Failed to download WebView2 bootstrapper. Check network and retry.'
+  }
+  $dest = Join-Path $StageDir 'MicrosoftEdgeWebView2Setup.exe'
+  Copy-Item $cached $dest -Force
+  Write-Info ('Bundled MicrosoftEdgeWebView2Setup.exe ({0:N1} KB)' -f ((Get-Item $dest).Length / 1KB))
+}
+
+function Write-PackageHelpers([string]$StageDir, [string]$AppName, [string]$Version) {
+  $assets = Join-Path $Root 'scripts\package_assets'
+  $utf8Bom = New-Object System.Text.UTF8Encoding $true
+
+  $readmeSrc = Join-Path $assets 'README.zh-CN.txt'
+  if (-not (Test-Path $readmeSrc)) {
+    throw "Missing package asset: $readmeSrc"
+  }
+  $readmeText = [System.IO.File]::ReadAllText($readmeSrc, $utf8Bom)
+  $readmeText = $readmeText.Replace('{{VERSION}}', $Version)
+  $readmeDest = Join-Path $StageDir ([string]([char]0x4F7F) + [char]0x7528 + [char]0x8BF4 + [char]0x660E + '.txt')
+  [System.IO.File]::WriteAllText($readmeDest, $readmeText, $utf8Bom)
+  Write-Info ('Wrote {0}' -f (Split-Path $readmeDest -Leaf))
+
+  $batSrc = Get-ChildItem $assets -Filter '*.bat' | Select-Object -First 1
+  if (-not $batSrc) {
+    throw "Missing install-deps .bat under $assets"
+  }
+  $batDest = Join-Path $StageDir $batSrc.Name
+  Copy-Item $batSrc.FullName $batDest -Force
+  Write-Info ('Wrote {0}' -f $batSrc.Name)
 }
 
 function Invoke-FlutterBuildRelease {
@@ -140,7 +238,7 @@ try {
     ((Get-ChildItem $ReleaseDir -Recurse -File | Measure-Object Length -Sum).Sum / 1MB), 2)
   Write-Info ('Found {0}  (Release ~ {1} MB)' -f (Split-Path $DisplayExe -Leaf), $releaseSize)
 
-  Write-Step 'Stage files (exclude fool_ai.exe mirror)'
+  Write-Step 'Stage app files'
   New-Item -ItemType Directory -Force -Path $DistDir | Out-Null
   $Stage = Join-Path $DistDir ('.stage-{0}' -f $Version)
   if (Test-Path $Stage) { Remove-Item $Stage -Recurse -Force }
@@ -150,6 +248,11 @@ try {
     Remove-Item (Join-Path $Stage 'fool_ai.exe') -Force
     Write-Info 'Removed fool_ai.exe from package'
   }
+
+  Write-Step 'Bundle VC++ runtime DLLs + WebView2 installer + readme'
+  Copy-VcRedistDlls -StageDir $Stage
+  Get-WebView2Bootstrapper -StageDir $Stage
+  Write-PackageHelpers -StageDir $Stage -AppName $AppName -Version $Version
   $stageFiles = (Get-ChildItem $Stage -Recurse -File).Count
   Write-Info ('Staged files: {0}' -f $stageFiles)
 
@@ -177,7 +280,7 @@ try {
   Write-Host ('  Version zip: {0}  ({1} MB)' -f $ZipVersioned, $sizeMb)
   Write-Host ('  Latest zip:  {0}' -f $ZipLatest)
   Write-Host ''
-  Write-Host '  Ship the whole zip, not a single exe. Target PCs need WebView2 Runtime.' -ForegroundColor DarkGray
+  Write-Host '  Package includes: VC++ DLLs, WebView2 setup, readme, install-deps bat.' -ForegroundColor DarkGray
   Write-Host ''
 }
 catch {
