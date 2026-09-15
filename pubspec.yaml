@@ -12,6 +12,8 @@ dependencies:
     sdk: flutter
   cupertino_icons: ^1.0.8
   url_launcher: ^6.3.0
+  webview_flutter: ^4.13.0
+  webview_flutter_android: ^4.10.0
   webview_windows:
     path: third_party/webview_windows
   window_manager: ^0.5.2
