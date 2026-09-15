@@ -75,6 +75,7 @@ class _MultiAIPageState extends State<MultiAIPage> with WindowListener {
   bool _isMaximized = false;
   bool _compareMode = false;
   bool _syncMode = false;
+  bool _isSending = false;
   final LinkedHashSet<int> _compareSelection = LinkedHashSet<int>();
   final LinkedHashSet<int> _syncSelection = LinkedHashSet<int>();
 
@@ -131,15 +132,28 @@ class _MultiAIPageState extends State<MultiAIPage> with WindowListener {
 
   Future<void> _sendToAll() async {
     final text = _inputController.text.trim();
-    if (text.isEmpty) return;
+    // Only block overlapping sync runs (looping multiple AIs takes a few seconds).
+    if (text.isEmpty || _isSending) return;
 
+    setState(() => _isSending = true);
     _inputController.clear();
     FocusScope.of(context).unfocus();
 
     // Focus + clear only. Do not write text via DOM — Qianwen/ProseMirror will
     // show ghost text while keeping the real editor state empty (gray send).
+    // Also cancel any leftover send timers from a previous attempt on this page.
     const focusClearJs = r'''
       (function() {
+        try {
+          if (window.__foolAiSendTimer) {
+            clearInterval(window.__foolAiSendTimer);
+            window.__foolAiSendTimer = null;
+          }
+          if (window.__foolAiSendFallback) {
+            clearTimeout(window.__foolAiSendFallback);
+            window.__foolAiSendFallback = null;
+          }
+        } catch (e) {}
         function visible(el) {
           if (!el) return false;
           var r = el.getBoundingClientRect();
@@ -169,6 +183,16 @@ class _MultiAIPageState extends State<MultiAIPage> with WindowListener {
 
     const clickSendJs = r'''
       (function() {
+        try {
+          if (window.__foolAiSendTimer) {
+            clearInterval(window.__foolAiSendTimer);
+            window.__foolAiSendTimer = null;
+          }
+          if (window.__foolAiSendFallback) {
+            clearTimeout(window.__foolAiSendFallback);
+            window.__foolAiSendFallback = null;
+          }
+        } catch (e) {}
         function visible(el) {
           if (!el) return false;
           var r = el.getBoundingClientRect();
@@ -220,6 +244,13 @@ class _MultiAIPageState extends State<MultiAIPage> with WindowListener {
           el.dispatchEvent(new KeyboardEvent('keydown', opts));
           el.dispatchEvent(new KeyboardEvent('keyup', opts));
         }
+        function hasText(el) {
+          if (!el) return false;
+          if ('value' in el && typeof el.value === 'string') {
+            return (el.value || '').trim().length > 0;
+          }
+          return (el.innerText || el.textContent || '').trim().length > 0;
+        }
         var el = findInput();
         if (!el) return false;
         el.focus();
@@ -233,12 +264,19 @@ class _MultiAIPageState extends State<MultiAIPage> with WindowListener {
         }
         if (tryOnce()) return true;
         var n = 0;
-        var timer = setInterval(function() {
-          if (tryOnce() || ++n >= 10) {
-            clearInterval(timer);
-            if (n >= 10) {
+        window.__foolAiSendTimer = setInterval(function() {
+          if (tryOnce()) {
+            clearInterval(window.__foolAiSendTimer);
+            window.__foolAiSendTimer = null;
+            return;
+          }
+          if (++n >= 10) {
+            clearInterval(window.__foolAiSendTimer);
+            window.__foolAiSendTimer = null;
+            // Only one keyboard fallback, and only if text is still there.
+            // Enter + Ctrl+Enter together is a common cause of per-AI double send.
+            if (hasText(el)) {
               pressKey(el, 'Enter');
-              setTimeout(function() { pressKey(el, 'Enter', { ctrl: true }); }, 120);
             }
           }
         }, 200);
@@ -246,18 +284,26 @@ class _MultiAIPageState extends State<MultiAIPage> with WindowListener {
       })()
     ''';
 
-    final targets = _syncTargets();
-    for (final index in targets) {
-      final controller = _controllers[index];
-      if (!controller.value.isInitialized) continue;
-      try {
-        await controller.executeScript(focusClearJs);
-        await Future<void>.delayed(const Duration(milliseconds: 80));
-        await controller.insertText(text);
-        await Future<void>.delayed(const Duration(milliseconds: 250));
-        await controller.executeScript(clickSendJs);
-      } catch (e) {
-        debugPrint('同步发送失败 (${_aiConfigs[index]['name']}): $e');
+    try {
+      final targets = _syncTargets();
+      for (final index in targets) {
+        final controller = _controllers[index];
+        if (!controller.value.isInitialized) continue;
+        try {
+          await controller.executeScript(focusClearJs);
+          await Future<void>.delayed(const Duration(milliseconds: 80));
+          await controller.insertText(text);
+          await Future<void>.delayed(const Duration(milliseconds: 250));
+          await controller.executeScript(clickSendJs);
+        } catch (e) {
+          debugPrint('同步发送失败 (${_aiConfigs[index]['name']}): $e');
+        }
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _isSending = false);
+      } else {
+        _isSending = false;
       }
     }
   }
@@ -876,17 +922,37 @@ class _MultiAIPageState extends State<MultiAIPage> with WindowListener {
                   Expanded(
                     child: TextField(
                       controller: _inputController,
+                      enabled: !_isSending,
                       decoration: InputDecoration(
-                        hintText: '输入问题，同步发送到已选的 ${targets.length} 个 AI…',
+                        hintText: _isSending
+                            ? '正在发送…'
+                            : '输入问题，同步发送到已选的 ${targets.length} 个 AI…',
                       ),
-                      onSubmitted: (_) => _sendToAll(),
+                      onSubmitted: (_) {
+                        if (!_isSending) _sendToAll();
+                      },
                     ),
                   ),
                   const SizedBox(width: 12),
                   FilledButton.icon(
-                    onPressed: _sendToAll,
-                    icon: const Icon(Icons.send_rounded, size: 18),
-                    label: Text('同步发送 (${targets.length})'),
+                    onPressed: () {
+                      if (!_isSending) _sendToAll();
+                    },
+                    icon: _isSending
+                        ? SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              color: colorScheme.onPrimary,
+                            ),
+                          )
+                        : const Icon(Icons.send_rounded, size: 18),
+                    label: Text(
+                      _isSending
+                          ? '发送中…'
+                          : '同步发送 (${targets.length})',
+                    ),
                     style: FilledButton.styleFrom(
                       minimumSize: const Size(0, 48),
                       padding: const EdgeInsets.symmetric(horizontal: 18),
