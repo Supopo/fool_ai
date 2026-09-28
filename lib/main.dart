@@ -433,45 +433,9 @@ class _MultiAIPageState extends State<MultiAIPage> with WindowListener {
                   child: Column(
                     children: [
                       Expanded(
-                        child: Stack(
-                          children: [
-                            _compareMode
-                                ? _buildCompareView()
-                                : _buildWebView(_selectedIndex),
-                            Positioned(
-                              right: 48,
-                              bottom: 48,
-                              child: Material(
-                                elevation: 2,
-                                shadowColor: Colors.black26,
-                                borderRadius: BorderRadius.circular(28),
-                                color: Colors.white.withOpacity(0.94),
-                                child: Padding(
-                                  padding:
-                                      const EdgeInsets.symmetric(horizontal: 4),
-                                  child: Row(
-                                    mainAxisSize: MainAxisSize.min,
-                                    children: [
-                                      IconButton(
-                                        onPressed: _reloadCurrent,
-                                        icon: const Icon(Icons.refresh),
-                                        tooltip: _compareMode
-                                            ? '刷新对比中的页面'
-                                            : '刷新当前页',
-                                      ),
-                                      IconButton(
-                                        onPressed: _reloadAll,
-                                        icon: const Icon(
-                                            Icons.replay_circle_filled),
-                                        tooltip: '刷新全部',
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                              ),
-                            ),
-                          ],
-                        ),
+                        child: _compareMode
+                            ? _buildCompareView()
+                            : _buildWebView(_selectedIndex),
                       ),
                       if (_syncMode) _buildBottomBar(context),
                     ],
@@ -540,6 +504,17 @@ class _MultiAIPageState extends State<MultiAIPage> with WindowListener {
               ),
             ),
           ),
+          _TitleBarButton(
+            icon: Icons.refresh,
+            tooltip: _compareMode ? '刷新对比中的页面' : '刷新当前页',
+            onPressed: _reloadCurrent,
+          ),
+          _TitleBarButton(
+            icon: Icons.replay_circle_filled,
+            tooltip: '刷新全部',
+            onPressed: _reloadAll,
+          ),
+          const SizedBox(width: 52),
           _TitleBarButton(
             icon: Icons.remove,
             tooltip: '最小化',
