@@ -4,6 +4,21 @@ plugins {
     id("dev.flutter.flutter-gradle-plugin")
 }
 
+fun loadKeystoreProperties(file: File): Map<String, String> {
+    if (!file.exists()) return emptyMap()
+    val values = linkedMapOf<String, String>()
+    file.readLines().forEach { raw ->
+        val line = raw.trim()
+        if (line.isEmpty() || line.startsWith("#")) return@forEach
+        val index = line.indexOf('=')
+        if (index <= 0) return@forEach
+        values[line.substring(0, index).trim()] = line.substring(index + 1).trim()
+    }
+    return values
+}
+
+val keystoreProperties = loadKeystoreProperties(rootProject.file("keystore.properties"))
+
 android {
     namespace = "com.example.fool_ai"
     compileSdk = flutter.compileSdkVersion
@@ -21,8 +36,8 @@ android {
         // For more information, see: https://flutter.dev/to/review-gradle-config.
         minSdk = 24
         targetSdk = flutter.targetSdkVersion
-        versionCode = flutter.versionCode
-        versionName = flutter.versionName
+        versionCode = 2
+        versionName = "1.0.1"
         // Most phones are arm64. Skipping other ABIs makes debug install much faster.
         ndk {
             abiFilters.clear()
@@ -30,11 +45,28 @@ android {
         }
     }
 
+    signingConfigs {
+        create("release") {
+            val storeFileName = keystoreProperties["storeFile"]
+            require(!storeFileName.isNullOrBlank()) {
+                "Missing storeFile in android/keystore.properties"
+            }
+            storeFile = rootProject.file(storeFileName)
+            storePassword = keystoreProperties["storePassword"]
+            keyAlias = keystoreProperties["keyAlias"]
+            keyPassword = keystoreProperties["keyPassword"]
+        }
+    }
+
     buildTypes {
         release {
-            // TODO: Add your own signing config for the release build.
-            // Signing with the debug keys for now, so `flutter run --release` works.
-            signingConfig = signingConfigs.getByName("debug")
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro",
+            )
+            signingConfig = signingConfigs.getByName("release")
         }
     }
 }

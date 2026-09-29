@@ -167,12 +167,16 @@ function Invoke-FlutterBuildRelease {
     throw 'flutter not found in PATH. Install Flutter and reopen the terminal.'
   }
 
-  Write-Info 'Building... first run after clean may take several minutes.'
+  $symbolDir = Join-Path $Root 'build\symbols\windows'
+  New-Item -ItemType Directory -Force -Path $symbolDir | Out-Null
+
+  Write-Info 'Building obfuscated Release... first run after clean may take several minutes.'
+  Write-Info 'Dart symbols are written outside the zip. Do not publish that folder.'
   Write-Info 'Flutter logs will stream below. Please wait until SUCCESS appears.'
   Write-Host ''
 
   $buildStarted = Get-Date
-  & flutter build windows --release
+  & flutter build windows --release --obfuscate "--split-debug-info=$symbolDir"
   $code = $LASTEXITCODE
 
   if ($null -eq $code) { $code = 0 }
@@ -264,6 +268,14 @@ try {
   Compress-Archive -Path (Join-Path $Stage '*') -DestinationPath $ZipVersioned -Force
   Copy-Item $ZipVersioned $ZipLatest -Force
   Remove-Item $Stage -Recurse -Force
+  $symbolSrc = Join-Path $Root 'build\symbols\windows'
+  $symbolDest = Join-Path $DistDir ('symbols\windows-v{0}' -f $Version)
+  if (Test-Path $symbolSrc) {
+    if (Test-Path $symbolDest) { Remove-Item $symbolDest -Recurse -Force }
+    New-Item -ItemType Directory -Force -Path (Split-Path $symbolDest) | Out-Null
+    Copy-Item $symbolSrc $symbolDest -Recurse -Force
+    Write-Info ('Dart symbols: {0}' -f $symbolDest)
+  }
 
   $sizeMb = [math]::Round((Get-Item $ZipVersioned).Length / 1MB, 2)
   $total = Format-Elapsed
