@@ -17,6 +17,7 @@ dependencies:
   webview_windows:
     path: third_party/webview_windows
   window_manager: ^0.5.2
+  shared_preferences: ^2.5.5
 
 dev_dependencies:
   flutter_test:

@@ -4,12 +4,16 @@ import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:window_manager/window_manager.dart';
 
 import 'ai_webview.dart';
 import 'platform_support.dart';
 
 const _kAppBarColor = Colors.white;
+const _kPrefMobileAiOrder = 'mobile_ai_order';
+const _kPrefMobileAiLoaded = 'mobile_ai_loaded';
+const _kPrefMobileSelected = 'mobile_selected';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -111,6 +115,11 @@ class _MultiAIPageState extends State<MultiAIPage> with WindowListener {
   final LinkedHashSet<int> _compareSelection = LinkedHashSet<int>();
   final LinkedHashSet<int> _syncSelection = LinkedHashSet<int>();
   final ScrollController _aiChipScrollController = ScrollController();
+  final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
+  DateTime? _lastBackAt;
+
+  /// Mobile: which AI WebViews the user chose to keep loaded.
+  final LinkedHashSet<int> _mobileLoaded = LinkedHashSet<int>();
 
   static const _sendCooldown = Duration(seconds: 2);
   static const _sameTextCooldown = Duration(seconds: 6);
@@ -122,6 +131,10 @@ class _MultiAIPageState extends State<MultiAIPage> with WindowListener {
     {'name': '通义千问', 'url': 'https://www.qianwen.com/', 'icon': Icons.travel_explore},
     {'name': '文心一言', 'url': 'https://wenxin.baidu.com/?enter_type=chat_site', 'icon': Icons.chat_bubble_outline},
   ];
+
+  /// Display order of AI config indices (mobile sidebar / chips).
+  late List<int> _aiOrder =
+      List<int>.generate(_aiConfigs.length, (i) => i);
 
   late final List<AiWebViewController> _controllers =
       List.generate(_aiConfigs.length, (_) => createAiWebViewController());
@@ -143,7 +156,15 @@ class _MultiAIPageState extends State<MultiAIPage> with WindowListener {
         } catch (_) {}
       });
     }
-    _bootstrapWebViews();
+    unawaited(_initAndBootstrap());
+  }
+
+  Future<void> _initAndBootstrap() async {
+    if (isMobile) {
+      await _loadMobileAiPrefs();
+      if (mounted) setState(() {});
+    }
+    await _bootstrapWebViews();
   }
 
   @override
@@ -153,14 +174,94 @@ class _MultiAIPageState extends State<MultiAIPage> with WindowListener {
   void onWindowUnmaximize() => setState(() => _isMaximized = false);
 
   Future<void> _bootstrapWebViews() async {
-    // Phone: only the current page. Desktop can warm all tabs.
+    // Phone: only load AIs the user opted into.
     if (isMobile) {
-      await _ensureWebView(_selectedIndex);
+      if (_mobileLoaded.isEmpty) {
+        _mobileLoaded.add(_selectedIndex);
+      }
+      // Load in display order so first paint feels intentional.
+      final toLoad = _aiOrder.where(_mobileLoaded.contains).toList();
+      if (!toLoad.contains(_selectedIndex)) {
+        toLoad.insert(0, _selectedIndex);
+        _mobileLoaded.add(_selectedIndex);
+      }
+      for (final i in toLoad) {
+        await _ensureWebView(i);
+      }
       return;
     }
     for (var i = 0; i < _aiConfigs.length; i++) {
       await _ensureWebView(i);
     }
+  }
+
+  Future<void> _loadMobileAiPrefs() async {
+    final prefs = await SharedPreferences.getInstance();
+    final n = _aiConfigs.length;
+    final orderRaw = prefs.getString(_kPrefMobileAiOrder);
+    final loadedRaw = prefs.getString(_kPrefMobileAiLoaded);
+    final selected = prefs.getInt(_kPrefMobileSelected);
+
+    final seen = <int>{};
+    final parsedOrder = <int>[];
+    if (orderRaw != null && orderRaw.isNotEmpty) {
+      for (final part in orderRaw.split(',')) {
+        final i = int.tryParse(part.trim());
+        if (i != null && i >= 0 && i < n && seen.add(i)) {
+          parsedOrder.add(i);
+        }
+      }
+    }
+    for (var i = 0; i < n; i++) {
+      if (seen.add(i)) parsedOrder.add(i);
+    }
+    _aiOrder = parsedOrder;
+
+    _mobileLoaded.clear();
+    if (loadedRaw != null && loadedRaw.isNotEmpty) {
+      for (final part in loadedRaw.split(',')) {
+        final i = int.tryParse(part.trim());
+        if (i != null && i >= 0 && i < n) {
+          _mobileLoaded.add(i);
+        }
+      }
+    }
+    if (_mobileLoaded.isEmpty) {
+      _mobileLoaded.add(_aiOrder.first);
+    }
+
+    if (selected != null &&
+        selected >= 0 &&
+        selected < n &&
+        _mobileLoaded.contains(selected)) {
+      _selectedIndex = selected;
+    } else {
+      _selectedIndex = _mobileLoaded.first;
+    }
+  }
+
+  Future<void> _saveMobileAiPrefs() async {
+    if (!isMobile) return;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_kPrefMobileAiOrder, _aiOrder.join(','));
+      await prefs.setString(
+        _kPrefMobileAiLoaded,
+        _mobileLoaded.join(','),
+      );
+      await prefs.setInt(_kPrefMobileSelected, _selectedIndex);
+    } catch (e) {
+      debugPrint('保存移动端 AI 偏好失败: $e');
+    }
+  }
+
+  void _onReorderAi(int oldIndex, int newIndex) {
+    setState(() {
+      if (newIndex > oldIndex) newIndex -= 1;
+      final item = _aiOrder.removeAt(oldIndex);
+      _aiOrder.insert(newIndex, item);
+    });
+    unawaited(_saveMobileAiPrefs());
   }
 
   Future<void> _ensureWebView(int index) async {
@@ -175,6 +276,9 @@ class _MultiAIPageState extends State<MultiAIPage> with WindowListener {
     try {
       await _controllers[index].initialize();
       await _controllers[index].loadUrl(_aiConfigs[index]['url'] as String);
+      if (isMobile) {
+        _mobileLoaded.add(index);
+      }
       if (mounted) {
         setState(() {
           _isInitialized[index] = true;
@@ -182,11 +286,60 @@ class _MultiAIPageState extends State<MultiAIPage> with WindowListener {
       } else {
         _isInitialized[index] = true;
       }
+      if (isMobile) unawaited(_saveMobileAiPrefs());
     } catch (e) {
       debugPrint('WebView $index 初始化失败: $e');
     } finally {
       _initializing.remove(index);
     }
+  }
+
+  Future<void> _unloadMobileWebView(int index) async {
+    if (!isMobile) return;
+    if (!_mobileLoaded.contains(index) && !_isInitialized[index]) return;
+    // Keep at least one loaded page.
+    if (_mobileLoaded.length <= 1 && _mobileLoaded.contains(index)) return;
+
+    _mobileLoaded.remove(index);
+    _initializing.remove(index);
+    try {
+      await _controllers[index].dispose();
+    } catch (_) {}
+    _controllers[index] = createAiWebViewController();
+    _isInitialized[index] = false;
+
+    if (_selectedIndex == index && _mobileLoaded.isNotEmpty) {
+      // Prefer next in display order.
+      final ordered = _aiOrder.where(_mobileLoaded.contains);
+      _selectedIndex = ordered.isNotEmpty ? ordered.first : _mobileLoaded.first;
+    }
+    if (mounted) setState(() {});
+    unawaited(_saveMobileAiPrefs());
+  }
+
+  /// Toggle whether this AI stays loaded on mobile.
+  Future<void> _toggleMobileLoad(int index, {BuildContext? context}) async {
+    if (!isMobile) return;
+    if (_mobileLoaded.contains(index)) {
+      if (_mobileLoaded.length <= 1) {
+        _showMobileLoadHint(context, '至少保留 1 个已加载的 AI');
+        return;
+      }
+      await _unloadMobileWebView(index);
+      return;
+    }
+    setState(() => _mobileLoaded.add(index));
+    await _ensureWebView(index);
+    if (mounted) setState(() {});
+    unawaited(_saveMobileAiPrefs());
+  }
+
+  void _showMobileLoadHint(BuildContext? context, String message) {
+    final ctx = context ?? (mounted ? this.context : null);
+    if (ctx == null) return;
+    ScaffoldMessenger.of(ctx).showSnackBar(
+      SnackBar(content: Text(message), duration: const Duration(seconds: 2)),
+    );
   }
 
   Future<void> _ensureWebViews(Iterable<int> indices) async {
@@ -195,29 +348,13 @@ class _MultiAIPageState extends State<MultiAIPage> with WindowListener {
     }
   }
 
-  /// Mount and warm sync targets so first send is not racing cold SPA pages.
-  Future<void> _prewarmSyncTargets() async {
+  /// Warm remaining sync pages in the background without blocking the UI.
+  void _prewarmSyncTargets() {
     final targets = _syncSelection.isNotEmpty
         ? _syncSelection.toList()
         : List<int>.generate(_aiConfigs.length, (i) => i);
-    await _ensureWebViews(targets);
-    if (!mounted) return;
-    setState(() {});
-    await WidgetsBinding.instance.endOfFrame;
-    await Future<void>.delayed(const Duration(milliseconds: 160));
     for (final index in targets) {
-      final controller = _controllers[index];
-      if (!controller.isInitialized) continue;
-      unawaited(() async {
-        try {
-          await controller.waitUntilReady();
-          await controller.waitUntilComposerReady(
-            timeout: const Duration(seconds: 25),
-          );
-        } catch (e) {
-          debugPrint('预热失败 (${_aiConfigs[index]['name']}): $e');
-        }
-      }());
+      unawaited(_ensureWebView(index));
     }
   }
 
@@ -743,13 +880,17 @@ class _MultiAIPageState extends State<MultiAIPage> with WindowListener {
   }
 
   /// User picked an AI tab. Flush queued sync text for that page if needed.
-  void _selectAi(int index) {
+  void _selectAi(int index, {BuildContext? context}) {
+    if (isMobile && !_mobileLoaded.contains(index)) {
+      _mobileLoaded.add(index);
+    }
     final changed = index != _selectedIndex;
     setState(() {
       _compareMode = false;
       _selectedIndex = index;
     });
     unawaited(_ensureWebView(index));
+    if (isMobile) unawaited(_saveMobileAiPrefs());
     if (changed) {
       unawaited(_flushPendingSyncFor(index));
     }
@@ -1208,13 +1349,20 @@ class _MultiAIPageState extends State<MultiAIPage> with WindowListener {
   void _enterSyncMode() {
     setState(() {
       _syncMode = true;
-      if (_syncSelection.isEmpty) {
+      if (isMobile) {
+        // Mobile sync targets follow currently loaded AIs.
+        _syncSelection
+          ..clear()
+          ..addAll(
+            _mobileLoaded.isEmpty ? <int>[_selectedIndex] : _mobileLoaded,
+          );
+      } else if (_syncSelection.isEmpty) {
         for (var i = 0; i < _aiConfigs.length; i++) {
           _syncSelection.add(i);
         }
       }
     });
-    unawaited(_prewarmSyncTargets());
+    _prewarmSyncTargets();
   }
 
   void _exitSyncMode() {
@@ -1269,7 +1417,11 @@ class _MultiAIPageState extends State<MultiAIPage> with WindowListener {
   }
 
   Future<void> _reloadAll() async {
-    for (final controller in _controllers) {
+    final targets = isMobile
+        ? _mobileLoaded.toList()
+        : List<int>.generate(_aiConfigs.length, (i) => i);
+    for (final index in targets) {
+      final controller = _controllers[index];
       if (!controller.isInitialized) continue;
       try {
         await controller.reload();
@@ -1345,79 +1497,120 @@ class _MultiAIPageState extends State<MultiAIPage> with WindowListener {
     final compact = isCompactLayout(MediaQuery.sizeOf(context).width);
     final fabMargin = compact ? 12.0 : 48.0;
 
-    return Scaffold(
-      backgroundColor: const Color(0xFFF4F6FA),
-      drawer: compact
-          ? Drawer(
-              width: 280,
-              child: SafeArea(child: _buildSideBar(context, inDrawer: true)),
-            )
-          : null,
-      body: Column(
-        children: [
-          if (compact)
-            _buildMobileAppBar(context)
-          else
-            _buildWindowTitleBar(context),
-          Expanded(
-            child: Row(
-              children: [
-                if (!compact) _buildSideBar(context, inDrawer: false),
-                Expanded(
-                  child: Column(
-                    children: [
-                      Expanded(
-                        child: Stack(
-                          children: [
-                            (!compact && _compareMode)
-                                ? _buildCompareView()
-                                : (compact
-                                    ? _buildMobileWebViewStack()
-                                    : _buildWebView(_selectedIndex)),
-                            if (!compact)
-                              Positioned(
-                                right: fabMargin,
-                                bottom: fabMargin,
-                                child: Material(
-                                  elevation: 2,
-                                  shadowColor: Colors.black26,
-                                  borderRadius: BorderRadius.circular(28),
-                                  color: Colors.white.withOpacity(0.94),
-                                  child: Padding(
-                                    padding: const EdgeInsets.symmetric(
-                                        horizontal: 4),
-                                    child: Row(
-                                      mainAxisSize: MainAxisSize.min,
-                                      children: [
-                                        IconButton(
-                                          onPressed: _reloadCurrent,
-                                          icon: const Icon(Icons.refresh),
-                                          tooltip: _compareMode
-                                              ? '刷新对比中的页面'
-                                              : '刷新当前页',
-                                        ),
-                                        IconButton(
-                                          onPressed: _reloadAll,
-                                          icon: const Icon(
-                                              Icons.replay_circle_filled),
-                                          tooltip: '刷新全部',
-                                        ),
-                                      ],
+    return PopScope(
+      canPop: !compact,
+      onPopInvokedWithResult: (didPop, _) {
+        if (didPop || !compact) return;
+        if (_scaffoldKey.currentState?.isDrawerOpen == true) {
+          _scaffoldKey.currentState!.closeDrawer();
+          return;
+        }
+        _onMobileBack();
+      },
+      child: Scaffold(
+        key: _scaffoldKey,
+        backgroundColor: const Color(0xFFF4F6FA),
+        drawer: compact
+            ? Drawer(
+                width: 280,
+                child: SafeArea(child: _buildSideBar(context, inDrawer: true)),
+              )
+            : null,
+        body: Column(
+          children: [
+            if (compact)
+              _buildMobileAppBar(context)
+            else
+              _buildWindowTitleBar(context),
+            Expanded(
+              child: Row(
+                children: [
+                  if (!compact) _buildSideBar(context, inDrawer: false),
+                  Expanded(
+                    child: Column(
+                      children: [
+                        Expanded(
+                          child: Stack(
+                            children: [
+                              (!compact && _compareMode)
+                                  ? _buildCompareView()
+                                  : (compact
+                                      ? _buildMobileWebViewStack()
+                                      : _buildWebView(_selectedIndex)),
+                              if (!compact)
+                                Positioned(
+                                  right: fabMargin,
+                                  bottom: fabMargin,
+                                  child: Material(
+                                    elevation: 2,
+                                    shadowColor: Colors.black26,
+                                    borderRadius: BorderRadius.circular(28),
+                                    color: Colors.white.withOpacity(0.94),
+                                    child: Padding(
+                                      padding: const EdgeInsets.symmetric(
+                                          horizontal: 4),
+                                      child: Row(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          IconButton(
+                                            onPressed: _reloadCurrent,
+                                            icon: const Icon(Icons.refresh),
+                                            tooltip: _compareMode
+                                                ? '刷新对比中的页面'
+                                                : '刷新当前页',
+                                          ),
+                                          IconButton(
+                                            onPressed: _reloadAll,
+                                            icon: const Icon(
+                                                Icons.replay_circle_filled),
+                                            tooltip: '刷新全部',
+                                          ),
+                                        ],
+                                      ),
                                     ),
                                   ),
                                 ),
-                              ),
-                          ],
+                            ],
+                          ),
                         ),
-                      ),
-                      if (_syncMode) _buildBottomBar(context),
-                    ],
+                        if (_syncMode) _buildBottomBar(context),
+                      ],
+                    ),
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
-          ),
-        ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _closeMobileDrawer() {
+    final scaffold = _scaffoldKey.currentState;
+    if (scaffold?.isDrawerOpen == true) {
+      scaffold!.closeDrawer();
+    }
+  }
+
+  void _onMobileBack() {
+    if (_scaffoldKey.currentState?.isDrawerOpen == true) {
+      _closeMobileDrawer();
+      return;
+    }
+    final now = DateTime.now();
+    if (_lastBackAt != null &&
+        now.difference(_lastBackAt!) < const Duration(seconds: 2)) {
+      SystemNavigator.pop();
+      return;
+    }
+    _lastBackAt = now;
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).hideCurrentSnackBar();
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('再按一次返回退出'),
+        duration: Duration(seconds: 2),
       ),
     );
   }
@@ -1451,15 +1644,21 @@ class _MultiAIPageState extends State<MultiAIPage> with WindowListener {
                   ),
                 ),
                 Expanded(
-                  child: SingleChildScrollView(
-                    controller: _aiChipScrollController,
-                    scrollDirection: Axis.horizontal,
-                    padding: const EdgeInsets.fromLTRB(0, 8, 12, 8),
-                    child: Row(
-                      children: [
-                        for (var i = 0; i < _aiConfigs.length; i++) ...[
-                          if (i > 0) const SizedBox(width: 8),
-                          ChoiceChip(
+                  child: Padding(
+                    padding: const EdgeInsets.fromLTRB(0, 8, 4, 8),
+                    child: Builder(
+                      builder: (context) {
+                        final chipIndices = isMobile
+                            ? _aiOrder
+                                .where(_mobileLoaded.contains)
+                                .toList()
+                            : List<int>.generate(
+                                _aiConfigs.length, (j) => j);
+                        final count = chipIndices.length;
+                        if (count == 0) return const SizedBox.shrink();
+
+                        Widget chipFor(int i, {bool expanded = false}) {
+                          final chip = ChoiceChip(
                             selected: i == _selectedIndex,
                             avatar: Icon(
                               _aiConfigs[i]['icon'] as IconData,
@@ -1469,9 +1668,19 @@ class _MultiAIPageState extends State<MultiAIPage> with WindowListener {
                                   : colorScheme.primary,
                             ),
                             label: Row(
-                              mainAxisSize: MainAxisSize.min,
+                              mainAxisSize: expanded
+                                  ? MainAxisSize.max
+                                  : MainAxisSize.min,
+                              mainAxisAlignment: expanded
+                                  ? MainAxisAlignment.center
+                                  : MainAxisAlignment.start,
                               children: [
-                                Text(_aiConfigs[i]['name'] as String),
+                                Flexible(
+                                  child: Text(
+                                    _aiConfigs[i]['name'] as String,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                ),
                                 if (_pendingSyncTargets.contains(i)) ...[
                                   const SizedBox(width: 4),
                                   Container(
@@ -1498,12 +1707,62 @@ class _MultiAIPageState extends State<MultiAIPage> with WindowListener {
                             visualDensity: VisualDensity.compact,
                             materialTapTargetSize:
                                 MaterialTapTargetSize.shrinkWrap,
-                            onSelected: (_) => _selectAi(i),
+                            onSelected: (_) =>
+                                _selectAi(i, context: context),
+                          );
+                          if (!expanded) return chip;
+                          return SizedBox(width: double.infinity, child: chip);
+                        }
+
+                        if (count == 1) {
+                          return LayoutBuilder(
+                            builder: (context, constraints) {
+                              final width = (constraints.maxWidth * 0.58)
+                                  .clamp(148.0, constraints.maxWidth);
+                              return Center(
+                                child: SizedBox(
+                                  width: width,
+                                  child: chipFor(
+                                    chipIndices.first,
+                                    expanded: true,
+                                  ),
+                                ),
+                              );
+                            },
+                          );
+                        }
+                        if (count <= 3) {
+                          return Row(
+                            children: [
+                              for (var c = 0; c < count; c++) ...[
+                                if (c > 0) const SizedBox(width: 6),
+                                Expanded(
+                                  child: chipFor(chipIndices[c], expanded: true),
+                                ),
+                              ],
+                            ],
+                          );
+                        }
+                        return SingleChildScrollView(
+                          controller: _aiChipScrollController,
+                          scrollDirection: Axis.horizontal,
+                          child: Row(
+                            children: [
+                              for (var c = 0; c < count; c++) ...[
+                                if (c > 0) const SizedBox(width: 8),
+                                chipFor(chipIndices[c]),
+                              ],
+                            ],
                           ),
-                        ],
-                      ],
+                        );
+                      },
                     ),
                   ),
+                ),
+                IconButton(
+                  tooltip: '刷新当前页',
+                  onPressed: _reloadCurrent,
+                  icon: const Icon(Icons.refresh),
                 ),
               ],
             ),
@@ -1652,6 +1911,97 @@ class _MultiAIPageState extends State<MultiAIPage> with WindowListener {
     );
   }
 
+
+  Widget _buildMobileAiDrawerTile(BuildContext context, int index) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final ai = _aiConfigs[index];
+    final loaded = _mobileLoaded.contains(index);
+    final selected = index == _selectedIndex;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 6),
+      child: Material(
+        color: selected
+            ? colorScheme.primary.withOpacity(0.10)
+            : Colors.transparent,
+        borderRadius: BorderRadius.circular(12),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(12),
+          onTap: () {
+            _selectAi(index, context: context);
+            if (_mobileLoaded.contains(index) || index == _selectedIndex) {
+              _closeMobileDrawer();
+            }
+          },
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 10),
+            child: Row(
+              children: [
+                SizedBox(
+                  width: 28,
+                  height: 28,
+                  child: Checkbox(
+                    value: loaded,
+                    onChanged: (_) {
+                      unawaited(
+                        _toggleMobileLoad(index, context: context),
+                      );
+                    },
+                    materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    visualDensity: VisualDensity.compact,
+                  ),
+                ),
+                const SizedBox(width: 4),
+                Icon(
+                  ai['icon'] as IconData,
+                  size: 22,
+                  color: selected
+                      ? colorScheme.primary
+                      : (loaded
+                          ? colorScheme.onSurfaceVariant
+                          : colorScheme.outline),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        ai['name'] as String,
+                        style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                              color: selected
+                                  ? colorScheme.primary
+                                  : (loaded
+                                      ? colorScheme.onSurface
+                                      : colorScheme.outline),
+                              fontWeight: selected
+                                  ? FontWeight.w700
+                                  : FontWeight.w500,
+                            ),
+                      ),
+                      if (loaded)
+                        Text(
+                          index == _selectedIndex ? '当前查看' : '已加载',
+                          style:
+                              Theme.of(context).textTheme.labelSmall?.copyWith(
+                                    color: colorScheme.primary,
+                                  ),
+                        ),
+                    ],
+                  ),
+                ),
+                Icon(
+                  Icons.drag_handle,
+                  size: 20,
+                  color: colorScheme.outline,
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _buildSideBar(BuildContext context, {required bool inDrawer}) {
     final colorScheme = Theme.of(context).colorScheme;
     return Container(
@@ -1696,142 +2046,219 @@ class _MultiAIPageState extends State<MultiAIPage> with WindowListener {
                 ],
               ),
             ),
+            if (isMobile)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 10),
+                child: Text(
+                  '勾选加载 AI（可全选），长按拖动调整顺序；点击名称切换查看',
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: colorScheme.onSurfaceVariant,
+                      ),
+                ),
+              ),
             const Divider(height: 1),
           ],
           Expanded(
-            child: ListView.builder(
-              padding: const EdgeInsets.fromLTRB(10, 12, 10, 8),
-              itemCount: _aiConfigs.length,
-              itemBuilder: (context, index) {
-                final ai = _aiConfigs[index];
-                final selected = _compareMode
-                    ? _compareSelection.contains(index)
-                    : index == _selectedIndex;
-                return Padding(
-                  padding: const EdgeInsets.only(bottom: 6),
-                  child: Material(
-                    color: selected
-                        ? colorScheme.primary.withOpacity(0.10)
-                        : Colors.transparent,
-                    borderRadius: BorderRadius.circular(12),
-                    child: InkWell(
-                      borderRadius: BorderRadius.circular(12),
-                      onTap: () {
-                        if (inDrawer) {
-                          _selectAi(index);
-                          Navigator.of(context).maybePop();
-                          return;
-                        }
-                        _onAiTapped(index);
-                      },
-                      child: Padding(
-                        padding: EdgeInsets.symmetric(
-                            vertical: 12, horizontal: inDrawer ? 10 : 6),
-                        child: inDrawer
-                            ? Row(
-                                children: [
-                                  Icon(
-                                    ai['icon'] as IconData,
-                                    size: 22,
-                                    color: selected
-                                        ? colorScheme.primary
-                                        : colorScheme.onSurfaceVariant,
-                                  ),
-                                  const SizedBox(width: 12),
-                                  Expanded(
-                                    child: Text(
-                                      ai['name'] as String,
-                                      style: Theme.of(context)
-                                          .textTheme
-                                          .bodyMedium
-                                          ?.copyWith(
-                                            color: selected
-                                                ? colorScheme.primary
-                                                : colorScheme.onSurface,
-                                            fontWeight: selected
-                                                ? FontWeight.w700
-                                                : FontWeight.w500,
+            child: isMobile && inDrawer
+                ? ReorderableListView.builder(
+                    padding: const EdgeInsets.fromLTRB(10, 12, 10, 8),
+                    buildDefaultDragHandles: false,
+                    itemCount: _aiOrder.length,
+                    onReorder: _onReorderAi,
+                    itemBuilder: (context, orderIndex) {
+                      final index = _aiOrder[orderIndex];
+                      return ReorderableDelayedDragStartListener(
+                        key: ValueKey('ai-order-$index'),
+                        index: orderIndex,
+                        child: _buildMobileAiDrawerTile(context, index),
+                      );
+                    },
+                  )
+                : ListView.builder(
+                    padding: const EdgeInsets.fromLTRB(10, 12, 10, 8),
+                    itemCount: _aiOrder.length,
+                    itemBuilder: (context, orderIndex) {
+                      final index = _aiOrder[orderIndex];
+                      final ai = _aiConfigs[index];
+                      final loaded =
+                          !isMobile || _mobileLoaded.contains(index);
+                      final selected = _compareMode
+                          ? _compareSelection.contains(index)
+                          : index == _selectedIndex;
+                      return Padding(
+                        padding: const EdgeInsets.only(bottom: 6),
+                        child: Material(
+                          color: selected
+                              ? colorScheme.primary.withOpacity(0.10)
+                              : Colors.transparent,
+                          borderRadius: BorderRadius.circular(12),
+                          child: InkWell(
+                            borderRadius: BorderRadius.circular(12),
+                            onTap: () {
+                              if (inDrawer) {
+                                _selectAi(index, context: context);
+                                if (!isMobile ||
+                                    _mobileLoaded.contains(index) ||
+                                    index == _selectedIndex) {
+                                  _closeMobileDrawer();
+                                }
+                                return;
+                              }
+                              _onAiTapped(index);
+                            },
+                            child: Padding(
+                              padding: EdgeInsets.symmetric(
+                                  vertical: 12,
+                                  horizontal: inDrawer ? 10 : 6),
+                              child: inDrawer
+                                  ? Row(
+                                      children: [
+                                        if (isMobile) ...[
+                                          SizedBox(
+                                            width: 28,
+                                            height: 28,
+                                            child: Checkbox(
+                                              value: loaded,
+                                              onChanged: (_) {
+                                                unawaited(
+                                                  _toggleMobileLoad(
+                                                    index,
+                                                    context: context,
+                                                  ),
+                                                );
+                                              },
+                                              materialTapTargetSize:
+                                                  MaterialTapTargetSize
+                                                      .shrinkWrap,
+                                              visualDensity:
+                                                  VisualDensity.compact,
+                                            ),
                                           ),
+                                          const SizedBox(width: 4),
+                                        ],
+                                        Icon(
+                                          ai['icon'] as IconData,
+                                          size: 22,
+                                          color: selected
+                                              ? colorScheme.primary
+                                              : (loaded
+                                                  ? colorScheme
+                                                      .onSurfaceVariant
+                                                  : colorScheme.outline),
+                                        ),
+                                        const SizedBox(width: 12),
+                                        Expanded(
+                                          child: Column(
+                                            crossAxisAlignment:
+                                                CrossAxisAlignment.start,
+                                            children: [
+                                              Text(
+                                                ai['name'] as String,
+                                                style: Theme.of(context)
+                                                    .textTheme
+                                                    .bodyMedium
+                                                    ?.copyWith(
+                                                      color: selected
+                                                          ? colorScheme
+                                                              .primary
+                                                          : (loaded
+                                                              ? colorScheme
+                                                                  .onSurface
+                                                              : colorScheme
+                                                                  .outline),
+                                                      fontWeight: selected
+                                                          ? FontWeight.w700
+                                                          : FontWeight.w500,
+                                                    ),
+                                              ),
+                                              if (isMobile && loaded)
+                                                Text(
+                                                  index == _selectedIndex
+                                                      ? '当前查看'
+                                                      : '已加载',
+                                                  style: Theme.of(context)
+                                                      .textTheme
+                                                      .labelSmall
+                                                      ?.copyWith(
+                                                        color: colorScheme
+                                                            .primary,
+                                                      ),
+                                                ),
+                                            ],
+                                          ),
+                                        ),
+                                        if (_compareMode && selected)
+                                          Icon(
+                                            Icons.check_circle,
+                                            size: 18,
+                                            color: colorScheme.primary,
+                                          ),
+                                      ],
+                                    )
+                                  : Column(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        Stack(
+                                          clipBehavior: Clip.none,
+                                          children: [
+                                            Icon(
+                                              ai['icon'] as IconData,
+                                              size: 22,
+                                              color: selected
+                                                  ? colorScheme.primary
+                                                  : colorScheme
+                                                      .onSurfaceVariant,
+                                            ),
+                                            if (_compareMode && selected)
+                                              Positioned(
+                                                right: -6,
+                                                top: -6,
+                                                child: Icon(
+                                                  Icons.check_circle,
+                                                  size: 14,
+                                                  color:
+                                                      colorScheme.primary,
+                                                ),
+                                              ),
+                                          ],
+                                        ),
+                                        const SizedBox(height: 6),
+                                        Text(
+                                          ai['name'] as String,
+                                          textAlign: TextAlign.center,
+                                          maxLines: 2,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: Theme.of(context)
+                                              .textTheme
+                                              .labelSmall
+                                              ?.copyWith(
+                                                color: selected
+                                                    ? colorScheme.primary
+                                                    : colorScheme
+                                                        .onSurfaceVariant,
+                                                fontWeight: selected
+                                                    ? FontWeight.w700
+                                                    : FontWeight.w500,
+                                                height: 1.2,
+                                              ),
+                                        ),
+                                      ],
                                     ),
-                                  ),
-                                  if (_compareMode && selected)
-                                    Icon(
-                                      Icons.check_circle,
-                                      size: 18,
-                                      color: colorScheme.primary,
-                                    ),
-                                ],
-                              )
-                            : Column(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Stack(
-                              clipBehavior: Clip.none,
-                              children: [
-                                Icon(
-                                  ai['icon'] as IconData,
-                                  size: 22,
-                                  color: selected
-                                      ? colorScheme.primary
-                                      : colorScheme.onSurfaceVariant,
-                                ),
-                                if (_compareMode && selected)
-                                  Positioned(
-                                    right: -6,
-                                    top: -6,
-                                    child: Icon(
-                                      Icons.check_circle,
-                                      size: 14,
-                                      color: colorScheme.primary,
-                                    ),
-                                  ),
-                              ],
                             ),
-                            const SizedBox(height: 6),
-                            Text(
-                              ai['name'] as String,
-                              textAlign: TextAlign.center,
-                              maxLines: 2,
-                              overflow: TextOverflow.ellipsis,
-                              style: Theme.of(context)
-                                  .textTheme
-                                  .labelSmall
-                                  ?.copyWith(
-                                    color: selected
-                                        ? colorScheme.primary
-                                        : colorScheme.onSurfaceVariant,
-                                    fontWeight: selected
-                                        ? FontWeight.w700
-                                        : FontWeight.w500,
-                                    height: 1.2,
-                                  ),
-                            ),
-                          ],
+                          ),
                         ),
-                      ),
-                    ),
+                      );
+                    },
                   ),
-                );
-              },
-            ),
           ),
           const Divider(height: 1),
           if (inDrawer) ...[
             _buildDrawerAction(
               context,
-              icon: Icons.refresh,
-              label: '刷新当前页',
-              onTap: () {
-                Navigator.of(context).maybePop();
-                _reloadCurrent();
-              },
-            ),
-            _buildDrawerAction(
-              context,
               icon: Icons.replay_circle_filled,
               label: '刷新全部',
               onTap: () {
-                Navigator.of(context).maybePop();
+                _closeMobileDrawer();
                 _reloadAll();
               },
             ),
@@ -1847,7 +2274,7 @@ class _MultiAIPageState extends State<MultiAIPage> with WindowListener {
                 borderRadius: BorderRadius.circular(12),
                 onTap: () {
                   if (inDrawer) {
-                    Navigator.of(context).maybePop();
+                    _closeMobileDrawer();
                   }
                   if (_syncMode) {
                     _exitSyncMode();
@@ -2190,24 +2617,30 @@ class _MultiAIPageState extends State<MultiAIPage> with WindowListener {
 
   Widget _buildMobileWebViewStack() {
     final selected = _selectedIndex.clamp(0, _aiConfigs.length - 1);
-    // Keep every initialized WebView in the paint tree. IndexedStack hides
-    // inactive children and Android then fails composer focus/React updates.
+    final loaded = _mobileLoaded.isEmpty
+        ? <int>{selected}
+        : _mobileLoaded.toSet();
+    // Keep loaded WebViews mounted so React/Slate state survives tab switches,
+    // but Offstage the inactive ones so Android does not composite them.
     return Stack(
       fit: StackFit.expand,
       children: [
-        for (var i = 0; i < _aiConfigs.length; i++)
+        for (final i in loaded)
           Positioned.fill(
-            child: IgnorePointer(
-              ignoring: i != selected,
-              child: Opacity(
-                opacity: i == selected ? 1 : 0,
-                child: _isInitialized[i]
-                    ? _controllers[i]
-                        .buildView(key: ValueKey('mobile-webview-$i'))
-                    : const ColoredBox(
-                        color: Colors.white,
-                        child: Center(child: CircularProgressIndicator()),
-                      ),
+            child: Offstage(
+              offstage: i != selected,
+              child: TickerMode(
+                enabled: i == selected,
+                child: IgnorePointer(
+                  ignoring: i != selected,
+                  child: _isInitialized[i]
+                      ? _controllers[i]
+                          .buildView(key: ValueKey('mobile-webview-$i'))
+                      : const ColoredBox(
+                          color: Colors.white,
+                          child: Center(child: CircularProgressIndicator()),
+                        ),
+                ),
               ),
             ),
           ),

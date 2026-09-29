@@ -8,6 +8,8 @@ import 'package:webview_flutter/webview_flutter.dart';
 import 'package:webview_flutter_android/webview_flutter_android.dart';
 import 'package:webview_windows/webview_windows.dart' as win;
 
+import 'platform_support.dart';
+
 const _composerProbeJs = r'''
 (function() {
   function visible(el) {
@@ -186,15 +188,15 @@ class _FlutterAiWebViewController implements AiWebViewController {
       'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
       '(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
 
-  // Qianwen desktop layout is clipped on phones; use a real mobile UA.
   static const _mobileUa =
       'Mozilla/5.0 (Linux; Android 14; Pixel 7) AppleWebKit/537.36 '
       '(KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36';
 
   static bool _preferMobileUa(String url) {
     final host = url.toLowerCase();
-    // These sites' desktop shells are clipped on phones.
-    return host.contains('qianwen') ||
+    // Desktop shells are heavier and often clipped on phones.
+    return isMobile ||
+        host.contains('qianwen') ||
         host.contains('tongyi.com') ||
         host.contains('tongyi.aliyun') ||
         host.contains('wenxin') ||
@@ -210,9 +212,9 @@ class _FlutterAiWebViewController implements AiWebViewController {
     final controller = WebViewController();
     await controller.setJavaScriptMode(JavaScriptMode.unrestricted);
     await controller.setBackgroundColor(Colors.white);
-    await controller.enableZoom(true);
-    // Default desktop UA; loadUrl() may switch to mobile for Qianwen.
-    await controller.setUserAgent(_desktopUa);
+    // Pinch-zoom on Android WebView is expensive during scroll/fling.
+    await controller.enableZoom(!isMobile);
+    await controller.setUserAgent(isMobile ? _mobileUa : _desktopUa);
     await controller.setNavigationDelegate(
       NavigationDelegate(
         onNavigationRequest: (request) => NavigationDecision.navigate,
@@ -221,7 +223,6 @@ class _FlutterAiWebViewController implements AiWebViewController {
           if (ready != null && !ready.isCompleted) {
             ready.complete();
           }
-          // Ensure mobile viewport for phone-targeted sites.
           if (_preferMobileUa(url) ||
               (_loadedUrl != null && _preferMobileUa(_loadedUrl!))) {
             unawaited(_injectMobileViewport());
@@ -233,9 +234,8 @@ class _FlutterAiWebViewController implements AiWebViewController {
     final platform = controller.platform;
     if (platform is AndroidWebViewController) {
       AndroidWebViewController.enableDebugging(false);
-      await platform.setMediaPlaybackRequiresUserGesture(false);
-      // Fit site content to the WebView width on phones.
-      await platform.setUseWideViewPort(true);
+      await platform.setMediaPlaybackRequiresUserGesture(true);
+      await platform.setUseWideViewPort(isMobile);
     }
 
     _controller = controller;
@@ -256,7 +256,7 @@ class _FlutterAiWebViewController implements AiWebViewController {
           }
           m.setAttribute(
             'content',
-            'width=device-width, initial-scale=1.0, maximum-scale=5.0, viewport-fit=cover'
+            'width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover'
           );
           try {
             document.documentElement.style.overflowX = 'auto';
